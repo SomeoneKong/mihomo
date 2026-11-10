@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/common/contextutils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/iface/anet"
@@ -32,8 +35,18 @@ import (
 	"github.com/samber/lo"
 )
 
+var (
+	tailscaleSerial       atomic.Uint64
+	tailscaleServersMutex sync.Mutex
+	tailscaleServers      = make(map[string]*Tailscale) // state dir -> outbound running a server on it
+
+	errTailscaleOutdated = errors.New("tailscale state-dir is in use by a newer outbound")
+	errTailscaleClosed   = errors.New("tailscale outbound closed")
+)
+
 type Tailscale struct {
 	*Base
+	serial      uint64 // creation order, a newer outbound takes over the state dir of an older one
 	server      *tsnet.Server
 	dnsResolver *dns.Resolver
 	option      TailscaleOption
@@ -139,6 +152,7 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
+		serial:        tailscaleSerial.Add(1),
 		option:        option,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -152,12 +166,16 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 		ControlURL: option.ControlURL,
 		Ephemeral:  option.Ephemeral,
 		SystemDialer: func(ctx context.Context, network, address string) (net.Conn, error) {
+			ctx, cancel := outbound.withLifetime(ctx)
+			defer cancel()
 			log.Debugln("[Tailscale](%s) SystemDialer: start dial %s %s", option.Name, network, address)
 			conn, err := outbound.dialer.DialContext(ctx, network, address)
 			log.Debugln("[Tailscale](%s) SystemDialer: finish dial %s %s, err: %v", option.Name, network, address, err)
 			return conn, err
 		},
 		SystemPacketListener: func(ctx context.Context, network, address string) (net.PacketConn, error) {
+			ctx, cancel := outbound.withLifetime(ctx)
+			defer cancel()
 			log.Debugln("[Tailscale](%s) SystemPacketListener: start listen %s %s", option.Name, network, address)
 			pc, err := outbound.dialer.ListenPacket(ctx, network, address, netip.AddrPort{})
 			log.Debugln("[Tailscale](%s) SystemPacketListener: finish listen %s %s, err: %v", option.Name, network, address, err)
@@ -185,6 +203,17 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 
 func (t *Tailscale) start() error {
 	t.startOnce.Do(func() {
+		if err := t.takeOverState(); err != nil {
+			t.startErr = err
+			t.setBackendInitialized(err)
+			return
+		}
+		// closed while the older outbound was shutting down
+		if t.ctx.Err() != nil {
+			t.startErr = errTailscaleClosed
+			t.setBackendInitialized(t.startErr)
+			return
+		}
 		if err := t.server.Start(); err != nil {
 			t.startErr = err
 			t.setBackendInitialized(err)
@@ -203,11 +232,65 @@ func (t *Tailscale) start() error {
 	return t.startErr
 }
 
+// withLifetime returns ctx canceled as well once the outbound is closed. The server
+// dials through it, and a start stuck on such a dial would otherwise keep a newer
+// outbound from taking the state dir over. The dial context is canceled once the
+// dial returns, as the tunnel does for any outbound, so connections outlive it.
+func (t *Tailscale) withLifetime(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	stop := contextutils.AfterFunc(t.ctx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
 func (t *Tailscale) ensureStarted(ctx context.Context) error {
+	// a canceled caller, such as the health check of a provider a new config replaced,
+	// must not start the server and take the state dir over
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := t.start(); err != nil {
 		return err
 	}
-	return t.waitBackendInitialized(ctx)
+	if err := t.waitBackendInitialized(ctx); err != nil {
+		return err
+	}
+	// a server closed after it started is not restarted
+	if t.ctx.Err() != nil {
+		return errTailscaleClosed
+	}
+	return nil
+}
+
+func (t *Tailscale) stateKey() string {
+	return filepath.Clean(t.option.StateDir)
+}
+
+// takeOverState must be called before the server is started.
+// A config reload or provider update replaces the outbound, but the old one is only
+// closed by the GC, which can take minutes and doesn't happen at all while a connection
+// still uses it. Two servers on the same state dir are the same node: the control server
+// keeps dropping one of them, and both write the same state file. So the newer outbound
+// closes the server of the older one first, whatever proxy the older one was created for.
+func (t *Tailscale) takeOverState() error {
+	key := t.stateKey()
+	tailscaleServersMutex.Lock()
+	old := tailscaleServers[key]
+	if old != nil && old.serial > t.serial {
+		tailscaleServersMutex.Unlock()
+		return errTailscaleOutdated
+	}
+	tailscaleServers[key] = t
+	tailscaleServersMutex.Unlock()
+
+	if old != nil && old != t {
+		log.Infoln("[Tailscale](%s) closing the server of %s, which runs on the same state-dir %s", t.option.Name, old.option.Name, key)
+		// waits for a start of the older outbound in progress
+		_ = old.Close()
+	}
+	return nil
 }
 
 func (t *Tailscale) watchBackendState() {
@@ -470,10 +553,17 @@ func (t *Tailscale) Close() error {
 		t.unregisterDNSResolver()
 	}
 	t.startOnce.Do(func() {
-		t.startErr = errors.New("tailscale outbound closed")
+		t.startErr = errTailscaleClosed
 	})
+	var err error
 	if t.server != nil && t.serverStarted { // tsnet.Server.Close() must not be called before or concurrently with Start.
-		return t.server.Close()
+		err = t.server.Close()
 	}
-	return nil
+	// release the state dir only after the server is down
+	tailscaleServersMutex.Lock()
+	if key := t.stateKey(); tailscaleServers[key] == t {
+		delete(tailscaleServers, key)
+	}
+	tailscaleServersMutex.Unlock()
+	return err
 }
