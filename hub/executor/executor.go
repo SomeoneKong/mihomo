@@ -310,6 +310,7 @@ func updateHosts(tree *trie.DomainTrie[resolver.HostValue]) {
 func updateProxies(proxies map[string]C.Proxy, providers map[string]P.ProxyProvider) {
 	oldProviders := tunnel.Providers()
 	tunnel.UpdateProxies(proxies, providers)
+	config.CommitProxyReuse(proxies)
 	// Stop the replaced providers now instead of when the GC finalizes them: until then
 	// they keep updating and health checking, and an update creates outbounds that are
 	// newer than the ones of the current config. Their proxies are left alone.

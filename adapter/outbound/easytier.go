@@ -50,6 +50,7 @@ type EasyTier struct {
 	mu         sync.Mutex
 	host       *corehost.Host
 	instance   *corehost.Instance
+	registerMu sync.Mutex
 	unregister func()
 }
 
@@ -502,11 +503,28 @@ func (e *EasyTier) IsL3Protocol(*C.Metadata) bool {
 	return true
 }
 
-func (e *EasyTier) Close() error {
-	e.cancel()
+// published takes the easytier:// DNS registration of the proxy name back. A config
+// that was parsed but never applied may have registered an outbound of its own under
+// the name in between, which leaves no registration once it is collected.
+func (e *EasyTier) published() {
+	e.registerMu.Lock()
+	defer e.registerMu.Unlock()
+	if e.ctx.Err() != nil {
+		return
+	}
 	if e.unregister != nil {
 		e.unregister()
 	}
+	e.unregister = dns.RegisterEasyTierDnsClient(e.option.Name, easyTierDNSTransport{easytier: e})
+}
+
+func (e *EasyTier) Close() error {
+	e.cancel()
+	e.registerMu.Lock()
+	if e.unregister != nil {
+		e.unregister()
+	}
+	e.registerMu.Unlock()
 	e.startMu.Lock()
 	e.closed = true
 	if e.readyCh != nil {
