@@ -45,10 +45,15 @@ const (
 var (
 	wireGuardSerial       atomic.Uint64
 	wireGuardDevicesMutex sync.Mutex
-	wireGuardDevices      = make(map[string]*WireGuard) // deviceKey -> outbound running that device
+	wireGuardDevices      = make(map[string]wireGuardDeviceSlot) // deviceKey -> outbound running that device
 
 	errWireGuardOutdated = errors.New("wireguard device is running in a newer outbound")
 )
+
+type wireGuardDeviceSlot struct {
+	owner    *WireGuard
+	released <-chan struct{} // closed once the devices of the earlier owners are down
+}
 
 type wireguardGoDevice interface {
 	Close()
@@ -67,7 +72,7 @@ type WireGuard struct {
 	runCancel     context.CancelFunc
 	deviceMutex   sync.Mutex
 	initOk        atomic.Bool
-	initMutex     sync.Mutex
+	initLock      chan struct{} // held by init0 and Close
 	initErr       error
 	option        WireGuardOption
 	connectAddr   M.Socksaddr
@@ -372,7 +377,8 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
-		serial: wireGuardSerial.Add(1),
+		serial:   wireGuardSerial.Add(1),
+		initLock: make(chan struct{}, 1),
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
 	singDialer := proxydialer.NewSingDialer(proxydialer.NewSlowDownDialer(outbound.dialer, slowdown.New()))
@@ -531,14 +537,25 @@ func (w *WireGuard) init0(ctx context.Context) (err error) {
 	if w.initOk.Load() {
 		return nil
 	}
-	w.initMutex.Lock()
-	defer w.initMutex.Unlock()
+	// Waiting for the lock gives way to ctx: the init holding it may wait for the
+	// device of an older outbound to go down, and that device for this very dial, as
+	// when its bind dials through a proxy that now dials through this outbound.
+	select {
+	case w.initLock <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-w.initLock }()
 	// double check like sync.Once
 	if w.initOk.Load() {
 		return nil
 	}
 	if w.initErr != nil {
 		return w.initErr
+	}
+	// a closed outbound must not bring up a device again
+	if err = w.runCtx.Err(); err != nil {
+		return err
 	}
 
 	w.bind.ResetReservedForEndpoint()
@@ -550,9 +567,6 @@ func (w *WireGuard) init0(ctx context.Context) (err error) {
 		return err
 	}
 	if err = ctx.Err(); err != nil {
-		return err
-	}
-	if err = w.takeOverDevice(); err != nil {
 		return err
 	}
 
@@ -602,6 +616,16 @@ func (w *WireGuard) init0(ctx context.Context) (err error) {
 	}
 	w.serverAddrTime.Store(time.Now())
 
+	// Take over only once the new device is fully configured, so a replacement
+	// that fails to set up leaves the working device of the older outbound alone.
+	// An outdated outbound stays outdated, so that error is kept.
+	if err = w.takeOverDevice(ctx); err != nil {
+		if errors.Is(err, errWireGuardOutdated) {
+			w.initErr = err
+		}
+		return err
+	}
+
 	err = tunDevice.Start()
 	if err != nil {
 		w.initErr = err
@@ -619,18 +643,13 @@ func (w *WireGuard) init0(ctx context.Context) (err error) {
 	return nil
 }
 
-// deviceKey identifies the proxy this outbound belongs to and the device it runs,
-// as seen by the peer: the private key, and the public key and endpoint of each peer.
+// deviceKey identifies the proxy this outbound was created for. The outbounds that
+// successive config reloads or provider updates create for the same proxy hand the
+// device over to each other, whatever changed in between: matching on the keys,
+// peers or addresses instead would miss a reordered or edited peer list, and closing
+// the device of a replaced outbound early costs nothing that is still configured.
 func (w *WireGuard) deviceKey() string {
-	key := w.option.ProviderName + "\x00" + w.option.Name + "\x00" + w.option.PrivateKey
-	if len(w.option.Peers) > 0 {
-		for _, peer := range w.option.Peers {
-			key += "\x00" + peer.PublicKey + "@" + peer.Addr().String()
-		}
-	} else {
-		key += "\x00" + w.option.PublicKey + "@" + w.option.Addr().String()
-	}
-	return key
+	return w.option.ProviderName + "\x00" + w.option.Name
 }
 
 // takeOverDevice must be called before the device is brought up.
@@ -638,22 +657,44 @@ func (w *WireGuard) deviceKey() string {
 // closed by the GC, which can take minutes and doesn't happen at all while a connection
 // still uses it. Two devices with the same private key make the peer switch its endpoint
 // between them, so the newer outbound closes the older one's device first.
-func (w *WireGuard) takeOverDevice() error {
+//
+// The older device can be stuck on a dial that waits for this very init, as when the
+// old config dialed through a proxy that now dials through this outbound. So it is
+// closed in the background and the wait gives way to ctx, which that dial cancels
+// once the older outbound is closed. A later init waits for the same release, so the
+// device never comes up before the older one is down.
+func (w *WireGuard) takeOverDevice(ctx context.Context) error {
 	key := w.deviceKey()
 	wireGuardDevicesMutex.Lock()
-	old := wireGuardDevices[key]
-	if old != nil && old.serial > w.serial {
+	slot := wireGuardDevices[key]
+	if slot.owner != nil && slot.owner.serial > w.serial {
 		wireGuardDevicesMutex.Unlock()
 		return errWireGuardOutdated
 	}
-	wireGuardDevices[key] = w
+	if slot.owner != w {
+		previous, earlier := slot.owner, slot.released
+		released := make(chan struct{})
+		go func() {
+			defer close(released)
+			if earlier != nil {
+				<-earlier
+			}
+			if previous != nil {
+				log.Debugln("[WG](%s) closing the device of the outdated outbound", w.option.Name)
+				_ = previous.Close()
+			}
+		}()
+		slot = wireGuardDeviceSlot{owner: w, released: released}
+		wireGuardDevices[key] = slot
+	}
 	wireGuardDevicesMutex.Unlock()
 
-	if old != nil && old != w {
-		log.Debugln("[WG](%s) closing the device of the outdated outbound", w.option.Name)
-		_ = old.Close()
+	select {
+	case <-slot.released:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return nil
 }
 
 func (w *WireGuard) updateServerAddr(ctx context.Context) {
@@ -855,16 +896,31 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 // Close implements C.ProxyAdapter
 func (w *WireGuard) Close() error {
 	w.runCancel()
-	wireGuardDevicesMutex.Lock()
-	if key := w.deviceKey(); wireGuardDevices[key] == w {
-		delete(wireGuardDevices, key)
-	}
-	wireGuardDevicesMutex.Unlock()
+	// Wait for an init in progress: it sees runCtx canceled and closes its device
+	// itself, so the device is down once Close returns.
+	w.initLock <- struct{}{}
 	w.deviceMutex.Lock()
 	wgDevice := w.device
 	w.deviceMutex.Unlock()
 	if wgDevice != nil {
 		wgDevice.Close()
+	}
+	<-w.initLock
+
+	// Release the slot only once the devices this outbound took over are down too,
+	// so a newer outbound can't come up next to one of them. The init lock is not
+	// held here: closing those devices may wait for a dial that runs into this init.
+	key := w.deviceKey()
+	wireGuardDevicesMutex.Lock()
+	slot := wireGuardDevices[key]
+	wireGuardDevicesMutex.Unlock()
+	if slot.owner == w {
+		<-slot.released
+		wireGuardDevicesMutex.Lock()
+		if wireGuardDevices[key].owner == w {
+			delete(wireGuardDevices, key)
+		}
+		wireGuardDevicesMutex.Unlock()
 	}
 	return nil
 }
