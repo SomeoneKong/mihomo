@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/common/contextutils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/iface/anet"
@@ -32,8 +36,18 @@ import (
 	"github.com/samber/lo"
 )
 
+var (
+	tailscaleSerial       atomic.Uint64
+	tailscaleServersMutex sync.Mutex
+	tailscaleServers      = make(map[string]*Tailscale) // state dir -> outbound running a server on it
+
+	errTailscaleOutdated = errors.New("tailscale state-dir is in use by a newer outbound")
+	errTailscaleClosed   = errors.New("tailscale outbound closed")
+)
+
 type Tailscale struct {
 	*Base
+	serial      uint64 // creation order, a newer outbound takes over the state dir of an older one
 	server      *tsnet.Server
 	dnsResolver *dns.Resolver
 	option      TailscaleOption
@@ -41,6 +55,12 @@ type Tailscale struct {
 	cancel      context.CancelFunc
 	startOnce   sync.Once
 	startErr    error
+	// startClaimed is set once the start runs, and startDone is closed once it is over,
+	// so callers can stop waiting for it.
+	startClaimed atomic.Bool
+	startDone    chan struct{}
+	stateDirKey  string      // the key the state dir is held under, set by takeOverState
+	stateDirInfo os.FileInfo // what tells the state dir apart, set with stateDirKey
 
 	backendInitOnce sync.Once
 	backendInitCh   chan struct{}
@@ -139,10 +159,12 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
+		serial:        tailscaleSerial.Add(1),
 		option:        option,
 		ctx:           ctx,
 		cancel:        cancel,
 		backendInitCh: make(chan struct{}),
+		startDone:     make(chan struct{}),
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
 	outbound.server = &tsnet.Server{
@@ -152,12 +174,16 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 		ControlURL: option.ControlURL,
 		Ephemeral:  option.Ephemeral,
 		SystemDialer: func(ctx context.Context, network, address string) (net.Conn, error) {
+			ctx, cancel := outbound.withLifetime(ctx)
+			defer cancel()
 			log.Debugln("[Tailscale](%s) SystemDialer: start dial %s %s", option.Name, network, address)
 			conn, err := outbound.dialer.DialContext(ctx, network, address)
 			log.Debugln("[Tailscale](%s) SystemDialer: finish dial %s %s, err: %v", option.Name, network, address, err)
 			return conn, err
 		},
 		SystemPacketListener: func(ctx context.Context, network, address string) (net.PacketConn, error) {
+			ctx, cancel := outbound.withLifetime(ctx)
+			defer cancel()
 			log.Debugln("[Tailscale](%s) SystemPacketListener: start listen %s %s", option.Name, network, address)
 			pc, err := outbound.dialer.ListenPacket(ctx, network, address, netip.AddrPort{})
 			log.Debugln("[Tailscale](%s) SystemPacketListener: finish listen %s %s, err: %v", option.Name, network, address, err)
@@ -185,6 +211,18 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 
 func (t *Tailscale) start() error {
 	t.startOnce.Do(func() {
+		defer close(t.startDone)
+		if err := t.takeOverState(); err != nil {
+			t.startErr = err
+			t.setBackendInitialized(err)
+			return
+		}
+		// closed while the older outbound was shutting down
+		if t.ctx.Err() != nil {
+			t.startErr = errTailscaleClosed
+			t.setBackendInitialized(t.startErr)
+			return
+		}
 		if err := t.server.Start(); err != nil {
 			t.startErr = err
 			t.setBackendInitialized(err)
@@ -203,11 +241,117 @@ func (t *Tailscale) start() error {
 	return t.startErr
 }
 
+// withLifetime returns ctx canceled as well once the outbound is closed. The server
+// dials through it, and a start stuck on such a dial would otherwise keep a newer
+// outbound from taking the state dir over. The dial context is canceled once the
+// dial returns, as the tunnel does for any outbound, so connections outlive it.
+func (t *Tailscale) withLifetime(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	stop := contextutils.AfterFunc(t.ctx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
 func (t *Tailscale) ensureStarted(ctx context.Context) error {
-	if err := t.start(); err != nil {
+	// a canceled caller, such as the health check of a provider a new config replaced,
+	// must not start the server and take the state dir over
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return t.waitBackendInitialized(ctx)
+	if err := t.startWithin(ctx); err != nil {
+		return err
+	}
+	if err := t.waitBackendInitialized(ctx); err != nil {
+		return err
+	}
+	// a server closed after it started is not restarted
+	if t.ctx.Err() != nil {
+		return errTailscaleClosed
+	}
+	return nil
+}
+
+// startWithin starts the outbound on its own and waits for the start for as long as
+// ctx allows. The start may wait for this very caller: tsnet dials and listens through
+// the dialer proxy as it starts, which can lead to the start of another outbound, and
+// the older outbound that one closes can be stuck on such a dial of its own. That dial
+// gives way once its outbound is closed, which only helps if no start runs on the
+// stack of a caller.
+func (t *Tailscale) startWithin(ctx context.Context) error {
+	if t.startClaimed.CompareAndSwap(false, true) {
+		go t.start()
+	}
+	select {
+	case <-t.startDone:
+		return t.startErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// stateDirIdentity reads what tells the dir apart from others. It is read from an open
+// handle, so that comparing it needs no more calls to the file system, which can be slow
+// to answer, as a network share is.
+func stateDirIdentity(dir string) (os.FileInfo, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.Stat()
+}
+
+// stateOwner returns the outbound that holds the state dir and the key it holds it
+// under. Another spelling of the dir, as in other case on a case-insensitive file
+// system or through a symbolic link, finds it too. tailscaleServersMutex must be held.
+func stateOwner(key string, info os.FileInfo) (string, *Tailscale) {
+	if owner, ok := tailscaleServers[key]; ok {
+		return key, owner
+	}
+	for other, owner := range tailscaleServers {
+		if owner.stateDirInfo != nil && os.SameFile(info, owner.stateDirInfo) {
+			return other, owner
+		}
+	}
+	return "", nil
+}
+
+// takeOverState must be called before the server is started.
+// A config reload or provider update replaces the outbound, but the old one is only
+// closed by the GC, which can take minutes and doesn't happen at all while a connection
+// still uses it. Two servers on the same state dir are the same node: the control server
+// keeps dropping one of them, and both write the same state file. So the newer outbound
+// closes the server of the older one first, whatever proxy the older one was created for.
+func (t *Tailscale) takeOverState() error {
+	key := filepath.Clean(t.option.StateDir)
+	// as tsnet does on start; another spelling of the dir is only found once it exists
+	if err := os.MkdirAll(key, 0o700); err != nil {
+		return err
+	}
+	info, err := stateDirIdentity(key)
+	if err != nil {
+		return err
+	}
+	tailscaleServersMutex.Lock()
+	oldKey, old := stateOwner(key, info)
+	if old != nil && old.serial > t.serial {
+		tailscaleServersMutex.Unlock()
+		return errTailscaleOutdated
+	}
+	// held under the spelling of this outbound, which outlives the one the older used
+	delete(tailscaleServers, oldKey)
+	tailscaleServers[key] = t
+	t.stateDirKey, t.stateDirInfo = key, info
+	tailscaleServersMutex.Unlock()
+
+	if old != nil && old != t {
+		log.Infoln("[Tailscale](%s) closing the server of %s, which runs on the same state-dir %s", t.option.Name, old.option.Name, key)
+		// waits for a start of the older outbound in progress
+		_ = old.Close()
+	}
+	return nil
 }
 
 func (t *Tailscale) watchBackendState() {
@@ -470,10 +614,18 @@ func (t *Tailscale) Close() error {
 		t.unregisterDNSResolver()
 	}
 	t.startOnce.Do(func() {
-		t.startErr = errors.New("tailscale outbound closed")
+		t.startErr = errTailscaleClosed
+		close(t.startDone)
 	})
+	var err error
 	if t.server != nil && t.serverStarted { // tsnet.Server.Close() must not be called before or concurrently with Start.
-		return t.server.Close()
+		err = t.server.Close()
 	}
-	return nil
+	// release the state dir only after the server is down
+	tailscaleServersMutex.Lock()
+	if key := t.stateDirKey; tailscaleServers[key] == t {
+		delete(tailscaleServers, key)
+	}
+	tailscaleServersMutex.Unlock()
+	return err
 }
