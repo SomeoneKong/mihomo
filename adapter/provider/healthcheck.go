@@ -121,7 +121,9 @@ func (hc *HealthCheck) touch() {
 }
 
 func (hc *HealthCheck) check() {
-	if len(hc.proxies) == 0 {
+	// a closed health check, such as the one of a provider a new config replaced,
+	// must not start or test the proxies any more
+	if len(hc.proxies) == 0 || hc.ctx.Err() != nil {
 		return
 	}
 
@@ -178,6 +180,9 @@ func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extra
 
 		p := proxy
 		b.Go(func() error {
+			if hc.ctx.Err() != nil {
+				return nil
+			}
 			ctx, cancel := context.WithTimeout(hc.ctx, hc.timeout)
 			defer cancel()
 			log.Debugln("Health Checking, proxy: %s, url: %s, id: {%s}", p.Name(), url, uid)

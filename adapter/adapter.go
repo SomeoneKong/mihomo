@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -167,6 +168,12 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 	var satisfied bool
 
 	defer func() {
+		// A test canceled by its caller, such as the health check of a provider a new
+		// config replaced, says nothing about the proxy, which the new config may still
+		// use. A test that timed out is a failure as before.
+		if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+			return
+		}
 		alive := err == nil
 		record := C.DelayHistory{Time: time.Now()}
 		if alive {
