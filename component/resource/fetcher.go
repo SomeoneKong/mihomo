@@ -130,6 +130,13 @@ func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (
 	f.loadBufMutex.Lock()
 	defer f.loadBufMutex.Unlock()
 
+	// A closed fetcher, such as the one of a provider a new config replaced, must not
+	// publish anything: an update queued or still reading when it was closed would
+	// create outbounds for a config that is no longer in use.
+	if err := f.ctx.Err(); err != nil {
+		return lo.Empty[V](), false, err
+	}
+
 	now := time.Now()
 	if f.hash.Equal(hash) {
 		if updateFile {
