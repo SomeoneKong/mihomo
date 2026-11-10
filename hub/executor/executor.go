@@ -98,6 +98,9 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateExperimental(cfg.Experimental)
 	updateUsers(cfg.Users)
 	updateProxies(cfg.Proxies, cfg.Providers)
+	// after the replaced providers are closed: an update they were still parsing may
+	// have registered outbounds of their own
+	config.CommitProxyReuse(cfg)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
 	updateHosts(cfg.Hosts)

@@ -223,3 +223,19 @@ func TestWireGuardClosedOutboundStaysDown(t *testing.T) {
 		t.Fatal("closed outbound holds its device key")
 	}
 }
+
+func TestWireGuardFailedInitIsNotReused(t *testing.T) {
+	port := listenTestPeer(t)
+	old := newTestWireGuard(t, "wg", port)
+	current := newTestWireGuard(t, "wg", port)
+	if err := initTestWireGuard(t, current); err != nil {
+		t.Fatal(err)
+	}
+	// an init that failed for good is not retried, so only a new outbound can recover
+	if err := initTestWireGuard(t, old); !errors.Is(err, errWireGuardOutdated) {
+		t.Fatalf("expected %v, got %v", errWireGuardOutdated, err)
+	}
+	if IsReusable(old) || !IsReusable(current) {
+		t.Fatal("outbound that failed to init is reused, or one that didn't is not")
+	}
+}

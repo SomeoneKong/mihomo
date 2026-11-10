@@ -349,3 +349,36 @@ func TestTailscaleFirstCallerGivesWayToContext(t *testing.T) {
 		t.Fatalf("the start did not take over: %v", current.startErr)
 	}
 }
+
+func TestTailscaleFailedStartIsNotReused(t *testing.T) {
+	old := newTestTailscale(t, "ts", "ts-failed-start")
+	current := newTestTailscale(t, "ts", "ts-failed-start")
+	if err := current.takeOverState(); err != nil {
+		t.Fatal(err)
+	}
+	// a start is not retried, so only a new outbound can recover
+	if err := old.start(); err == nil {
+		t.Fatal("outdated outbound started")
+	}
+	if IsReusable(old) || !IsReusable(current) {
+		t.Fatal("outbound that failed to start is reused, or one that didn't is not")
+	}
+}
+
+func TestTailscaleRegistersDNSOnceInUse(t *testing.T) {
+	ts := newTestTailscale(t, "ts", "ts-dns")
+	if ts.unregisterDNSResolver != nil {
+		t.Fatal("registered its DNS before it was in use")
+	}
+	ts.published()
+	if ts.unregisterDNSResolver == nil {
+		t.Fatal("did not register its DNS once in use")
+	}
+	_ = ts.Close()
+	closed := newTestTailscale(t, "ts", "ts-dns")
+	_ = closed.Close()
+	closed.published()
+	if closed.unregisterDNSResolver != nil {
+		t.Fatal("a closed outbound registered its DNS")
+	}
+}

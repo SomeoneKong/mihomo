@@ -65,9 +65,11 @@ type Tailscale struct {
 	backendInitOnce sync.Once
 	backendInitCh   chan struct{}
 	backendInitErr  error
+	startFailed     atomic.Bool // backendInitErr is set
 
 	serverStarted bool
 
+	dnsRegistrationMutex  sync.Mutex
 	unregisterDNSResolver func()
 }
 
@@ -203,9 +205,7 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 			log.Debugln("[Tailscale](%s) %s", option.Name, fmt.Sprintf(format, args...))
 		},
 	}
-	dnsTransport := tailscaleDNSTransport{tailscale: outbound}
-	outbound.dnsResolver = dns.NewResolverFromClient(dnsTransport)
-	outbound.unregisterDNSResolver = dns.RegisterTailscaleDnsClient(option.Name, dnsTransport)
+	outbound.dnsResolver = dns.NewResolverFromClient(tailscaleDNSTransport{tailscale: outbound})
 	return outbound, nil
 }
 
@@ -398,6 +398,7 @@ func (t *Tailscale) watchBackendState() {
 func (t *Tailscale) setBackendInitialized(err error) {
 	t.backendInitOnce.Do(func() {
 		t.backendInitErr = err
+		t.startFailed.Store(err != nil)
 		close(t.backendInitCh)
 	})
 }
@@ -608,11 +609,35 @@ func (t *Tailscale) IsL3Protocol(metadata *C.Metadata) bool {
 	return true
 }
 
+func (t *Tailscale) closed() bool {
+	return t.ctx.Err() != nil
+}
+
+func (t *Tailscale) reusable() bool {
+	return !t.closed() && !t.startFailed.Load()
+}
+
+// published registers the tailscale:// DNS of the proxy name once the outbound is in
+// use. An outbound of a config that is never applied, or of a provider that was
+// replaced, registers nothing, so it never takes the name from the one in use.
+func (t *Tailscale) published() {
+	t.dnsRegistrationMutex.Lock()
+	defer t.dnsRegistrationMutex.Unlock()
+	if t.closed() {
+		return
+	}
+	// registering replaces the entry in place, so a lookup never finds it missing, and
+	// the unregister function of the earlier registration no longer removes it
+	t.unregisterDNSResolver = dns.RegisterTailscaleDnsClient(t.option.Name, tailscaleDNSTransport{tailscale: t})
+}
+
 func (t *Tailscale) Close() error {
 	t.cancel()
+	t.dnsRegistrationMutex.Lock()
 	if t.unregisterDNSResolver != nil {
 		t.unregisterDNSResolver()
 	}
+	t.dnsRegistrationMutex.Unlock()
 	t.startOnce.Do(func() {
 		t.startErr = errTailscaleClosed
 		close(t.startDone)
