@@ -1,0 +1,133 @@
+name: Fork Release
+# 本 fork 的构建与发布。上游的 build.yml / test.yml / trigger-cmfa-update.yml
+# 保持原样以免 rebase 冲突，需在仓库 Actions 设置中禁用。
+on:
+  push:
+    tags:
+      - 'v*-custom.*'
+  # 手动触发只构建、上传 artifacts，不发布 release，用于验证 CI。
+  workflow_dispatch:
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # output 需与 component/updater 的 CoreBaseName() 一致，
+        # 内核自更新才能按 mihomo-<goos>-<output>-<version> 找到资产。
+        jobs:
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2 }
+          - { goos: linux,   goarch: amd64, goamd64: v2, output: amd64-v2 }
+          - { goos: linux,   goarch: arm64, output: arm64 }
+          - { goos: darwin,  goarch: arm64, output: arm64 }
+          - { goos: darwin,  goarch: amd64, goamd64: v2, output: amd64-v2 }
+    steps:
+      - uses: actions/checkout@v6
+
+      # Go 版本跟随上游 build.yml，升级正式版时对照更新。
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+          go-version: '1.26'
+
+      - name: Set variables
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${GITHUB_REF_NAME//\//-}-$(git rev-parse --short HEAD)"
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "BUILDTIME=$(date)" >> $GITHUB_ENV
+          echo "CGO_ENABLED=0" >> $GITHUB_ENV
+          echo "BUILDTAG=-extldflags --static" >> $GITHUB_ENV
+          echo "GOTOOLCHAIN=local" >> $GITHUB_ENV
+
+      - name: Update CA
+        run: |
+          sudo apt-get update && sudo apt-get install ca-certificates
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
+      - name: Build core
+        env:
+          GOOS: ${{ matrix.jobs.goos }}
+          GOARCH: ${{ matrix.jobs.goarch }}
+          GOAMD64: ${{ matrix.jobs.goamd64 }}
+        run: |
+          go build -v -tags "with_gvisor" -trimpath -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid="
+          NAME="mihomo-${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}"
+          if [ "${{ matrix.jobs.goos }}" = "windows" ]; then
+            cp mihomo.exe ${NAME}.exe
+            zip -r ${NAME}-${VERSION}.zip ${NAME}.exe
+          else
+            cp mihomo ${NAME}
+            gzip -c ${NAME} > ${NAME}-${VERSION}.gz
+            rm ${NAME}
+          fi
+          echo ${VERSION} > version.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: '${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}'
+          path: |
+            mihomo*.gz
+            mihomo*.zip
+            version.txt
+
+  release:
+    if: ${{ github.ref_type == 'tag' }}
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        run: |
+          BASE="${GITHUB_REF_NAME%-custom.*}"
+          git fetch --no-tags https://github.com/MetaCubeX/mihomo.git "refs/tags/${BASE}:refs/tags/${BASE}"
+          {
+            echo "Based on upstream [${BASE}](https://github.com/MetaCubeX/mihomo/releases/tag/${BASE})."
+            echo
+            echo "Patches:"
+            git log --reverse --format='- %s' "${BASE}..${GITHUB_SHA}"
+          } > release.md
+          cat release.md
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: bin/
+          merge-multiple: true
+
+      # Clash Verge 的更新组件单独升级内核所用的载荷，用 fork 的更新签名密钥签名。
+      # 私钥与 clash-verge-rev 仓库的相同，放在本仓库的 Actions secrets 中。
+      - name: Build core payloads
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: python3 .github/fork-core-payload.py bin "${GITHUB_REF_NAME}" "${GITHUB_SHA}"
+
+      - name: Calculate checksums
+        run: |
+          cd bin/
+          find . -type f -not -name "checksums.*" -not -name "version.txt" | sort | xargs sha256sum > checksums.txt
+          cat checksums.txt
+
+      # 内核自更新读取 releases/latest/download/version.txt，故需标记为 latest。
+      - name: Upload release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: bin/*
+          body_path: release.md
+          make_latest: true
