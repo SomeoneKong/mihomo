@@ -211,6 +211,8 @@ type Config struct {
 	Tunnels       []LC.Tunnel
 	Sniffer       *sniffer.Config
 	TLS           *TLS
+
+	inlineProxies *inlineProxyParser
 }
 
 type RawCors struct {
@@ -469,6 +471,8 @@ type RawConfig struct {
 	TLS           RawTLS                    `yaml:"tls" json:"tls"`
 
 	ClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`
+
+	inlineProxies *inlineProxyParser // set by parsing, see CommitProxyReuse
 }
 
 // Parse config
@@ -681,6 +685,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	}
 	config.Proxies = proxies
 	config.Providers = providers
+	config.inlineProxies = rawCfg.inlineProxies
 
 	listeners, err := parseListeners(rawCfg)
 	if err != nil {
@@ -899,8 +904,10 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	proxyList = append(proxyList, "DIRECT", "REJECT")
 
 	// parse proxy
+	inlineParser := newInlineProxyParser(cfg)
+	cfg.inlineProxies = inlineParser
 	for idx, mapping := range proxiesConfig {
-		proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(T.Tunnel))
+		proxy, err := inlineParser.parse(mapping)
 		if err != nil {
 			return nil, nil, fmt.Errorf("proxy %d: %w", idx, err)
 		}
@@ -911,6 +918,9 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 		proxies[proxy.Name()] = proxy
 		proxyList = append(proxyList, proxy.Name())
 		AllProxies = append(AllProxies, proxy.Name())
+	}
+	if err = inlineParser.finish(proxies); err != nil {
+		return nil, nil, err
 	}
 
 	// keep the original order of ProxyGroups in config file
