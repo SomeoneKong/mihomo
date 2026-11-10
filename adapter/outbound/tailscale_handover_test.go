@@ -170,3 +170,18 @@ func TestTailscaleClosedOutboundStaysDown(t *testing.T) {
 		t.Fatal("closed outbound started its server")
 	}
 }
+
+func TestTailscaleFailedStartIsNotReused(t *testing.T) {
+	old := newTestTailscale(t, "ts", "ts-failed-start")
+	current := newTestTailscale(t, "ts", "ts-failed-start")
+	if err := current.takeOverState(); err != nil {
+		t.Fatal(err)
+	}
+	// a start is not retried, so only a new outbound can recover
+	if err := old.start(); err == nil {
+		t.Fatal("outdated outbound started")
+	}
+	if IsReusable(old) || !IsReusable(current) {
+		t.Fatal("outbound that failed to start is reused, or one that didn't is not")
+	}
+}

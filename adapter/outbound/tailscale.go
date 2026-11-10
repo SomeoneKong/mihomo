@@ -58,9 +58,11 @@ type Tailscale struct {
 	backendInitOnce sync.Once
 	backendInitCh   chan struct{}
 	backendInitErr  error
+	startFailed     atomic.Bool // backendInitErr is set
 
 	serverStarted bool
 
+	dnsRegistrationMutex  sync.Mutex
 	unregisterDNSResolver func()
 }
 
@@ -337,6 +339,7 @@ func (t *Tailscale) watchBackendState() {
 func (t *Tailscale) setBackendInitialized(err error) {
 	t.backendInitOnce.Do(func() {
 		t.backendInitErr = err
+		t.startFailed.Store(err != nil)
 		close(t.backendInitCh)
 	})
 }
@@ -547,11 +550,35 @@ func (t *Tailscale) IsL3Protocol(metadata *C.Metadata) bool {
 	return true
 }
 
+func (t *Tailscale) closed() bool {
+	return t.ctx.Err() != nil
+}
+
+func (t *Tailscale) reusable() bool {
+	return !t.closed() && !t.startFailed.Load()
+}
+
+// published takes the tailscale:// DNS registration of the proxy name back. A config
+// that was parsed but never applied may have registered an outbound of its own under
+// the name in between, which leaves no registration once it is collected.
+func (t *Tailscale) published() {
+	t.dnsRegistrationMutex.Lock()
+	defer t.dnsRegistrationMutex.Unlock()
+	if t.closed() {
+		return
+	}
+	// registering replaces the entry in place, so a lookup never finds it missing, and
+	// the unregister function of the earlier registration no longer removes it
+	t.unregisterDNSResolver = dns.RegisterTailscaleDnsClient(t.option.Name, tailscaleDNSTransport{tailscale: t})
+}
+
 func (t *Tailscale) Close() error {
 	t.cancel()
+	t.dnsRegistrationMutex.Lock()
 	if t.unregisterDNSResolver != nil {
 		t.unregisterDNSResolver()
 	}
+	t.dnsRegistrationMutex.Unlock()
 	t.startOnce.Do(func() {
 		t.startErr = errTailscaleClosed
 	})
