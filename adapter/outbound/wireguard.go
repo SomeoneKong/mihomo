@@ -74,6 +74,7 @@ type WireGuard struct {
 	initOk        atomic.Bool
 	initLock      chan struct{} // held by init0 and Close
 	initErr       error
+	initFailed    atomic.Bool // initErr is set
 	option        WireGuardOption
 	connectAddr   M.Socksaddr
 	localPrefixes []netip.Prefix
@@ -546,6 +547,7 @@ func (w *WireGuard) init0(ctx context.Context) (err error) {
 		return ctx.Err()
 	}
 	defer func() { <-w.initLock }()
+	defer func() { w.initFailed.Store(w.initErr != nil) }()
 	// double check like sync.Once
 	if w.initOk.Load() {
 		return nil

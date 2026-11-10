@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/common/yaml"
@@ -164,6 +165,16 @@ func (pp *proxySetProvider) Initial() error {
 	return nil
 }
 
+// update takes the proxies of a fetch. Only the provider of the config in use fetches,
+// and not once it is replaced, so they are in use. They are published before anyone
+// can use them, as one may provide the DNS that resolves the server of another.
+func (pp *proxySetProvider) update(proxies []C.Proxy) {
+	for _, proxy := range proxies {
+		outbound.Published(proxy.Adapter())
+	}
+	pp.setProxies(proxies)
+}
+
 func (pp *proxySetProvider) closeAllConnections() {
 	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
 		for _, chain := range c.ProviderChains() {
@@ -205,7 +216,7 @@ func NewProxySetProvider(name string, interval time.Duration, payload []map[stri
 		hc.setProxies(proxies)
 	}
 
-	fetcher := resource.NewFetcher[[]C.Proxy](name, interval, vehicle, nil, parser, pd.setProxies)
+	fetcher := resource.NewFetcher[[]C.Proxy](name, interval, vehicle, nil, parser, pd.update)
 	pd.Fetcher = fetcher
 	if httpVehicle, ok := vehicle.(*resource.HTTPVehicle); ok {
 		httpVehicle.SetInRead(func(resp *http.Response) {

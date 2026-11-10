@@ -50,6 +50,7 @@ type EasyTier struct {
 	mu         sync.Mutex
 	host       *corehost.Host
 	instance   *corehost.Instance
+	registerMu sync.Mutex
 	unregister func()
 }
 
@@ -165,7 +166,6 @@ func NewEasyTier(option EasyTierOption) (*EasyTier, error) {
 		cancel:     cancel,
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
-	outbound.unregister = dns.RegisterEasyTierDnsClient(option.Name, easyTierDNSTransport{easytier: outbound})
 	return outbound, nil
 }
 
@@ -514,11 +514,27 @@ func (e *EasyTier) IsL3Protocol(*C.Metadata) bool {
 	return true
 }
 
+// published registers the easytier:// DNS of the proxy name once the outbound is in
+// use. An outbound of a config that is never applied, or of a provider that was
+// replaced, registers nothing, so it never takes the name from the one in use.
+func (e *EasyTier) published() {
+	e.registerMu.Lock()
+	defer e.registerMu.Unlock()
+	if e.ctx.Err() != nil {
+		return
+	}
+	// registering replaces the entry in place, so a lookup never finds it missing, and
+	// the unregister function of the earlier registration no longer removes it
+	e.unregister = dns.RegisterEasyTierDnsClient(e.option.Name, easyTierDNSTransport{easytier: e})
+}
+
 func (e *EasyTier) Close() error {
 	e.cancel()
+	e.registerMu.Lock()
 	if e.unregister != nil {
 		e.unregister()
 	}
+	e.registerMu.Unlock()
 	e.startMu.Lock()
 	e.closed = true
 	if e.readyCh != nil {
