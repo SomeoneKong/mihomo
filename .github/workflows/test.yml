@@ -1,0 +1,10 @@
+# Registers this path on the default branch so that the upstream workflow of the
+# same name, which the code branches carry, can be disabled in this fork. It
+# never runs: it is disabled, and has no trigger besides a manual one.
+name: Test
+on: workflow_dispatch
+jobs:
+  disabled:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "disabled in this fork"
