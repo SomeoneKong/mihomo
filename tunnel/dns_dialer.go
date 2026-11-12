@@ -95,6 +95,7 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 			metadata.Host = "" // clear host to avoid double resolve in proxy
 		}
 
+		ctx, dialerChainsOf := recordDialers(ctx)
 		conn, err := proxyAdapter.DialContext(ctx, metadata)
 		if err != nil {
 			logMetadataErr(metadata, rule, proxyAdapter, err)
@@ -102,7 +103,7 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 		}
 		logMetadata(metadata, rule, conn)
 
-		conn = statistic.NewTCPTracker(conn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+		conn = statistic.NewTCPTracker(conn, statistic.DefaultManager, metadata, rule, 0, 0, false, dialerChainsOf(conn))
 
 		return conn, nil
 	} else {
@@ -114,6 +115,7 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 			return nil, fmt.Errorf("proxy adapter [%s] UDP is not supported", proxyAdapter.Name())
 		}
 
+		ctx, dialerChainsOf := recordDialers(ctx)
 		packetConn, err := proxyAdapter.ListenPacketContext(ctx, metadata)
 		if err != nil {
 			logMetadataErr(metadata, rule, proxyAdapter, err)
@@ -121,7 +123,7 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 		}
 		logMetadata(metadata, rule, packetConn)
 
-		packetConn = statistic.NewUDPTracker(packetConn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+		packetConn = statistic.NewUDPTracker(packetConn, statistic.DefaultManager, metadata, rule, 0, 0, false, dialerChainsOf(packetConn))
 
 		return N.NewBindPacketConn(packetConn, metadata.UDPAddr()), nil
 	}
@@ -176,6 +178,7 @@ func (d *DNSDialer) ListenPacket(ctx context.Context, network, addr string) (net
 		return nil, fmt.Errorf("proxy adapter [%s] UDP is not supported", proxyAdapter.Name())
 	}
 
+	ctx, dialerChainsOf := recordDialers(ctx)
 	packetConn, err := proxyAdapter.ListenPacketContext(ctx, metadata)
 	if err != nil {
 		logMetadataErr(metadata, rule, proxyAdapter, err)
@@ -183,7 +186,7 @@ func (d *DNSDialer) ListenPacket(ctx context.Context, network, addr string) (net
 	}
 	logMetadata(metadata, rule, packetConn)
 
-	packetConn = statistic.NewUDPTracker(packetConn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+	packetConn = statistic.NewUDPTracker(packetConn, statistic.DefaultManager, metadata, rule, 0, 0, false, dialerChainsOf(packetConn))
 
 	return packetConn, nil
 }
