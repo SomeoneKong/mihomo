@@ -3,6 +3,7 @@ package route
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"time"
 
@@ -23,7 +24,7 @@ func connectionRouter() http.Handler {
 
 func getConnections(w http.ResponseWriter, r *http.Request) {
 	if !(r.Header.Get("Upgrade") == "websocket") {
-		snapshot := statistic.DefaultManager.Snapshot()
+		snapshot := connectionSnapshot(r)
 		render.JSON(w, r, snapshot)
 		return
 	}
@@ -49,7 +50,7 @@ func getConnections(w http.ResponseWriter, r *http.Request) {
 	buf := &bytes.Buffer{}
 	sendSnapshot := func() error {
 		buf.Reset()
-		snapshot := statistic.DefaultManager.Snapshot()
+		snapshot := connectionSnapshot(r)
 		if err := json.NewEncoder(buf).Encode(snapshot); err != nil {
 			return err
 		}
@@ -68,6 +69,16 @@ func getConnections(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+}
+
+// connectionSnapshot leaves out the connections that carry other proxies' traffic, which the
+// connections they carry describe with their dialer chains, unless asked with underlying=true.
+func connectionSnapshot(r *http.Request) *statistic.Snapshot {
+	snapshot := statistic.DefaultManager.Snapshot()
+	if r.URL.Query().Get("underlying") != "true" {
+		snapshot.Connections = slices.DeleteFunc(snapshot.Connections, (*statistic.TrackerInfo).Underlying)
+	}
+	return snapshot
 }
 
 func closeConnection(w http.ResponseWriter, r *http.Request) {
