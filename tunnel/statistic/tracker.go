@@ -1,6 +1,7 @@
 package statistic
 
 import (
+	"context"
 	"io"
 	"net"
 	"time"
@@ -31,6 +32,35 @@ type TrackerInfo struct {
 	ProviderChain C.Chain      `json:"providerChains"`
 	Rule          string       `json:"rule"`
 	RulePayload   string       `json:"rulePayload"`
+	DialerChains  []C.Chain    `json:"dialerChains,omitempty"`
+
+	underlying bool
+}
+
+// TrackerOption sets up a tracker before it joins the manager, where readers can see it.
+type TrackerOption func(*TrackerInfo)
+
+// WithDialerChains records, layer by layer, the proxies the outbound reached its server through.
+func WithDialerChains(chains []C.Chain) TrackerOption {
+	return func(info *TrackerInfo) {
+		info.DialerChains = chains
+	}
+}
+
+// AsUnderlying marks a connection a proxy dialer made under ctx to carry another proxy's
+// traffic, and reports it to the recorder of the connection it is made for.
+func AsUnderlying(ctx context.Context) TrackerOption {
+	return func(info *TrackerInfo) {
+		info.underlying = true
+		if recorder, ok := ctx.Value(dialerRecorderKey{}).(*DialerRecorder); ok {
+			recorder.record(info)
+		}
+	}
+}
+
+// Underlying reports whether the connection carries another proxy's traffic.
+func (info *TrackerInfo) Underlying() bool {
+	return info.underlying
 }
 
 type tcpTracker struct {
@@ -116,7 +146,7 @@ func (tt *tcpTracker) Upstream() any {
 	return tt.Conn
 }
 
-func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool) *tcpTracker {
+func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool, options ...TrackerOption) *tcpTracker {
 	metadata.RemoteDst = conn.RemoteDestination()
 
 	t := &tcpTracker{
@@ -147,6 +177,9 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
 	if rule != nil {
 		t.TrackerInfo.Rule = rule.RuleType().String()
 		t.TrackerInfo.RulePayload = rule.Payload()
+	}
+	for _, option := range options {
+		option(t.TrackerInfo)
 	}
 
 	manager.Join(t)
@@ -208,7 +241,7 @@ func (ut *udpTracker) Upstream() any {
 	return ut.PacketConn
 }
 
-func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool) *udpTracker {
+func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool, options ...TrackerOption) *udpTracker {
 	metadata.RemoteDst = conn.RemoteDestination()
 
 	ut := &udpTracker{
@@ -239,6 +272,9 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 	if rule != nil {
 		ut.TrackerInfo.Rule = rule.RuleType().String()
 		ut.TrackerInfo.RulePayload = rule.Payload()
+	}
+	for _, option := range options {
+		option(ut.TrackerInfo)
 	}
 
 	manager.Join(ut)
