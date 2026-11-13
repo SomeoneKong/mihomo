@@ -27,6 +27,12 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 		err   error
 	)
 	switch proxyType {
+	case "ninja":
+		option := &outbound.NinjaOption{BasicOption: basicOption}
+		err = decoder.Decode(mapping, option)
+		if err == nil {
+			proxy, err = outbound.NewNinja(*option)
+		}
 	case "ss":
 		ssOption := &outbound.ShadowSocksOption{BasicOption: basicOption}
 		err = decoder.Decode(mapping, ssOption)
