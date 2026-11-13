@@ -101,36 +101,47 @@ func TestStalledConfigUpdateDoesNotHoldOthersOff(t *testing.T) {
 	timeout := configBodyTimeout
 	configBodyTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { configBodyTimeout = timeout })
-	server := httptest.NewServer(http.HandlerFunc(updateConfigs))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patchConfigs(w, r)
+		} else {
+			updateConfigs(w, r)
+		}
+	}))
 	t.Cleanup(server.Close)
 	address := strings.TrimPrefix(server.URL, "http://")
 
-	// a complete JSON object, but the rest of the body announced never comes
-	stalled, err := net.Dial("tcp", address)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = stalled.Close() })
 	payload := `{"payload":"proxies: ["}`
-	if _, err := io.WriteString(stalled, "PUT / HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n"+payload); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(50 * time.Millisecond) // queued first
+	for method, partial := range map[string]string{
+		http.MethodPut:   payload,          // a complete JSON object
+		http.MethodPatch: `{"mode":"rule"`, // an object not yet closed
+	} {
+		// the rest of the body announced never comes
+		stalled, err := net.Dial("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = stalled.Close() })
+		if _, err := io.WriteString(stalled, method+" / HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n"+partial); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond) // queued first
 
-	next, err := net.Dial("tcp", address)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = next.Close() })
-	if _, err := io.WriteString(next, "PUT / HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: "+strconv.Itoa(len(payload))+"\r\n\r\n"+payload); err != nil {
-		t.Fatal(err)
-	}
-	_ = next.SetReadDeadline(time.Now().Add(5 * time.Second))
-	status, err := bufio.NewReader(next).ReadString('\n')
-	if err != nil {
-		t.Fatalf("the update after a stalled one never went through: %v", err)
-	}
-	if !strings.Contains(status, "400") {
-		t.Fatalf("unexpected answer %q", status)
+		next, err := net.Dial("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = next.Close() })
+		if _, err := io.WriteString(next, "PUT / HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: "+strconv.Itoa(len(payload))+"\r\n\r\n"+payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = next.SetReadDeadline(time.Now().Add(5 * time.Second))
+		status, err := bufio.NewReader(next).ReadString('\n')
+		if err != nil {
+			t.Fatalf("the update after a stalled %s never went through: %v", method, err)
+		}
+		if !strings.Contains(status, "400") {
+			t.Fatalf("unexpected answer %q after a stalled %s", status, method)
+		}
 	}
 }

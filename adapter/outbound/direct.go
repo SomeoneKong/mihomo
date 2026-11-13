@@ -82,7 +82,7 @@ func NewDirectWithOption(option DirectOption) *Direct {
 }
 
 func NewDirect() *Direct {
-	return &Direct{
+	return markBuiltin(&Direct{
 		Base: NewBase(BaseOption{
 			Name:   "DIRECT",
 			Type:   C.Direct,
@@ -90,11 +90,11 @@ func NewDirect() *Direct {
 			Prefer: C.DualStack,
 		}),
 		loopBack: loopback.NewDetector(),
-	}
+	})
 }
 
 func NewCompatible() *Direct {
-	return &Direct{
+	return markBuiltin(&Direct{
 		Base: NewBase(BaseOption{
 			Name:   "COMPATIBLE",
 			Type:   C.Compatible,
@@ -102,5 +102,5 @@ func NewCompatible() *Direct {
 			Prefer: C.DualStack,
 		}),
 		loopBack: loopback.NewDetector(),
-	}
+	})
 }

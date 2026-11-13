@@ -287,13 +287,19 @@ func needLookupIP(metadata *C.Metadata) bool {
 }
 
 func preHandleMetadata(metadata *C.Metadata) error {
+	return preHandleMetadataWith(metadata, liveMapping{})
+}
+
+// preHandleMetadataWith asks mapping about the IP of the connection, which a connection
+// keeps the answers of from when it was made.
+func preHandleMetadataWith(metadata *C.Metadata, mapping ipMapping) error {
 	// preprocess enhanced-mode metadata
-	if needLookupIP(metadata) {
-		host, exist := resolver.FindHostByIP(metadata.DstIP)
+	if mapping.needLookup(metadata) {
+		host, exist := mapping.findHost(metadata.DstIP)
 		if exist {
 			metadata.Host = host
 			metadata.DNSMode = C.DNSMapping
-			if resolver.IsFakeIP(metadata.DstIP) {
+			if mapping.isFakeIP(metadata.DstIP) {
 				// only clear dstIP if it is confirmed to be a fake IP
 				metadata.DstIP = netip.Addr{}
 				metadata.DNSMode = C.DNSFakeIP
@@ -303,7 +309,7 @@ func preHandleMetadata(metadata *C.Metadata) error {
 			} else if node != nil && node.IsDomain {
 				metadata.Host = node.Domain
 			}
-		} else if resolver.IsFakeIP(metadata.DstIP) {
+		} else if mapping.isFakeIP(metadata.DstIP) {
 			return fmt.Errorf("fake DNS record %s missing", metadata.DstIP)
 		}
 	} else if node, ok := resolver.DefaultHosts.Search(metadata.Host, true); ok {
@@ -315,6 +321,12 @@ func preHandleMetadata(metadata *C.Metadata) error {
 }
 
 func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err error) {
+	return resolveMetadataWith(context.Background(), metadata, nil)
+}
+
+// resolveMetadataWith matches under ctx, and follows path where the groups would decide by
+// what they select now.
+func resolveMetadataWith(ctx context.Context, metadata *C.Metadata, path *pinnedPath) (proxy C.Proxy, rule C.Rule, err error) {
 	if metadata.SpecialProxy != "" {
 		var exist bool
 		proxy, exist = proxies[metadata.SpecialProxy]
@@ -325,7 +337,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 	}
 	var (
 		resolved             bool
-		attemptProcessLookup = metadata.Type != C.INNER
+		attemptProcessLookup = metadata.Type != C.INNER && path == nil
 	)
 
 	if node, ok := resolver.DefaultHosts.Search(metadata.Host, false); ok {
@@ -336,7 +348,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 	helper := C.RuleMatchHelper{
 		ResolveIP: func() {
 			if !resolved && metadata.Host != "" && !metadata.Resolved() {
-				ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)
+				ctx, cancel := context.WithTimeout(ctx, resolver.DefaultDNSTimeout)
 				defer cancel()
 				ip, err := resolver.ResolveIP(ctx, metadata.Host)
 				if err != nil {
@@ -381,7 +393,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 			if !ok {
 				return false
 			}
-			for a := adapter; a != nil; a = a.Unwrap(metadata, false) {
+			for a := adapter; a != nil; a = path.unwrap(adapterName, a, metadata) {
 				if a.Type() == C.PassRule {
 					return true
 				}
@@ -405,7 +417,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 		proxy = proxies["GLOBAL"]
 	// Rule
 	default:
-		proxy, rule, err = match(metadata, helper)
+		proxy, rule, err = matchWith(metadata, helper, path)
 	}
 	return
 }
@@ -455,7 +467,8 @@ func handleUDPConn(packet C.PacketAdapter) {
 				return nil, nil, err
 			}
 
-			_ = preHandleMetadata(metadata) // error was pre-checked
+			input := newMatchInput(metadata)
+			_ = preHandleMetadataWith(metadata, input.recording()) // error was pre-checked
 
 			proxy, rule, err := resolveMetadata(metadata)
 			if err != nil {
@@ -478,7 +491,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 			}
 			logMetadata(metadata, rule, rawPc)
 
-			pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule, 0, 0, true, dialerChainsOf(rawPc))
+			pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule, 0, 0, true, dialerChainsOf(rawPc), statistic.WithMatchInput(input))
 
 			sender.AddMapping(originMetadata, dialMetadata)
 			oAddrPort := dialMetadata.AddrPort()
@@ -518,8 +531,9 @@ func handleTCPConn(connCtx C.ConnContext) {
 	}
 	fixMetadata(metadata) // fix some metadata not set via metadata.SetRemoteAddr or metadata.SetRemoteAddress
 
+	input := newMatchInput(metadata)
 	preHandleFailed := false
-	if err := preHandleMetadata(metadata); err != nil {
+	if err := preHandleMetadataWith(metadata, input.recording()); err != nil {
 		log.Debugln("[Metadata PreHandle] error: %s", err)
 		preHandleFailed = true
 	}
@@ -529,9 +543,11 @@ func handleTCPConn(connCtx C.ConnContext) {
 	if sniffingEnable && snifferDispatcher.Enable() {
 		// Try to sniff a domain when `preHandleMetadata` failed, this is usually
 		// caused by a "Fake DNS record missing" error when enhanced-mode is fake-ip.
+		host, ip := metadata.Host, metadata.DstIP
 		if snifferDispatcher.TCPSniff(conn, metadata) {
 			// we now have a domain name
 			preHandleFailed = false
+			input.sniffed(metadata, host, ip)
 		}
 	}
 
@@ -616,7 +632,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 	}
 	logMetadata(metadata, rule, remoteConn)
 
-	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true, dialerChainsOf(remoteConn))
+	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true, dialerChainsOf(remoteConn), statistic.WithMatchInput(input))
 	defer func(remoteConn C.Conn) {
 		_ = remoteConn.Close()
 	}(remoteConn)
@@ -656,6 +672,10 @@ func logMetadata(metadata *C.Metadata, rule C.Rule, remoteConn C.Connection) {
 }
 
 func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, error) {
+	return matchWith(metadata, helper, nil)
+}
+
+func matchWith(metadata *C.Metadata, helper C.RuleMatchHelper, path *pinnedPath) (C.Proxy, C.Rule, error) {
 	configMux.RLock()
 	defer configMux.RUnlock()
 
@@ -672,7 +692,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 				}
 
 				// parse multi-layer nesting
-				for adapter := adapter; adapter != nil; adapter = adapter.Unwrap(metadata, false) {
+				for adapter := adapter; adapter != nil; adapter = path.unwrap(ada, adapter, metadata) {
 					if adapter.Type() == C.Pass {
 						log.Debugln("%s match Pass rule", adapter.Name())
 						continue GetRules
@@ -685,7 +705,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 					}
 				}
 
-				if metadata.NetWork == C.UDP && !adapter.SupportUDP() {
+				if metadata.NetWork == C.UDP && !path.supportUDP(ada, adapter) {
 					log.Debugln("%s UDP is not supported", adapter.Name())
 					continue
 				}

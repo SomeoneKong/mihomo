@@ -7,6 +7,7 @@ import (
 	"io"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/pool"
@@ -87,7 +88,8 @@ func (bp *baseProvider) Strategy() any {
 type ruleSetProvider struct {
 	baseProvider
 	*resource.Fetcher[ruleStrategy]
-	format P.RuleFormat
+	format  P.RuleFormat
+	version atomic.Uint64 // see StrategyVersion
 }
 
 type RuleSetProvider struct {
@@ -131,7 +133,9 @@ func NewRuleSetProvider(name string, behavior P.RuleBehavior, format P.RuleForma
 	}
 
 	onUpdate := func(strategy ruleStrategy) {
+		rp.version.Add(1)
 		rp.strategy = strategy
+		rp.version.Add(1)
 		tunnel.RuleUpdateCallback().Emit(rp)
 	}
 

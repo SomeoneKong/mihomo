@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 )
 
 func waitingUpdate() chan struct{} {
@@ -41,5 +43,34 @@ func TestUpdatesGoInTheOrderTheyCome(t *testing.T) {
 		if n != i+1 {
 			t.Fatalf("updates went in the order %v", order)
 		}
+	}
+}
+
+func TestUpdateThatGaveUpPassesItsTurnOn(t *testing.T) {
+	unlock := LockUpdate()
+	ctx, cancel := context.WithCancel(context.Background())
+	tail := waitingUpdate()
+	result := make(chan error, 1)
+	go func() {
+		_, err := LockUpdateContext(ctx)
+		result <- err
+	}()
+	for waitingUpdate() == tail { // until it queued up
+		runtime.Gosched()
+	}
+	cancel()
+	if err := <-result; err == nil {
+		t.Fatal("waited although its context is done")
+	}
+	next := make(chan struct{})
+	go func() {
+		LockUpdate()()
+		close(next)
+	}()
+	unlock()
+	select {
+	case <-next:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update queued after one that gave up never went through")
 	}
 }

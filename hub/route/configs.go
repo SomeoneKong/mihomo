@@ -333,6 +333,8 @@ func pointerOrDefaultTuicServer(p *tuicServerSchema, def LC.TuicServer) LC.TuicS
 }
 
 func patchConfigs(w http.ResponseWriter, r *http.Request) {
+	defer executor.LockUpdate()()
+	defer receiveConfigUpdate(w)()
 	general := &configSchema{}
 	if err := render.DecodeJSON(r.Body, &general); err != nil {
 		render.Status(r, http.StatusBadRequest)
@@ -407,14 +409,19 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 // updates queued after it.
 var configBodyTimeout = 30 * time.Second
 
+// receiveConfigUpdate bounds receiving the body of an update queued as it came in and received
+// only now: one that never arrives in full must not hold the others off.
+func receiveConfigUpdate(w http.ResponseWriter) (done func()) {
+	rc := http.NewResponseController(w)
+	if rc.SetReadDeadline(time.Now().Add(configBodyTimeout)) != nil {
+		return func() {}
+	}
+	return func() { _ = rc.SetReadDeadline(time.Time{}) }
+}
+
 func updateConfigs(w http.ResponseWriter, r *http.Request) {
 	defer executor.LockUpdate()()
-	// queued as it came in and received only now: one that never arrives in full must not
-	// hold the others off
-	rc := http.NewResponseController(w)
-	if rc.SetReadDeadline(time.Now().Add(configBodyTimeout)) == nil {
-		defer rc.SetReadDeadline(time.Time{})
-	}
+	defer receiveConfigUpdate(w)()
 	req := struct {
 		Path    string `json:"path"`
 		Payload string `json:"payload"`
