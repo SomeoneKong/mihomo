@@ -34,7 +34,9 @@ type TrackerInfo struct {
 	RulePayload   string       `json:"rulePayload"`
 	DialerChains  []C.Chain    `json:"dialerChains,omitempty"`
 
-	underlying bool
+	underlying   bool
+	withoutUsage bool
+	usage        *usageCounter
 }
 
 // TrackerOption sets up a tracker before it joins the manager, where readers can see it.
@@ -86,6 +88,7 @@ func (tt *tcpTracker) Read(b []byte) (int, error) {
 		tt.manager.PushDownloaded(download)
 	}
 	tt.DownloadTotal.Add(download)
+	tt.usage.add(0, download)
 	return n, err
 }
 
@@ -96,6 +99,7 @@ func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
 		tt.manager.PushDownloaded(download)
 	}
 	tt.DownloadTotal.Add(download)
+	tt.usage.add(0, download)
 	return
 }
 
@@ -105,6 +109,7 @@ func (tt *tcpTracker) UnwrapReader() (io.Reader, []N.CountFunc) {
 			tt.manager.PushDownloaded(download)
 		}
 		tt.DownloadTotal.Add(download)
+		tt.usage.add(0, download)
 	}}
 }
 
@@ -115,6 +120,7 @@ func (tt *tcpTracker) Write(b []byte) (int, error) {
 		tt.manager.PushUploaded(upload)
 	}
 	tt.UploadTotal.Add(upload)
+	tt.usage.add(upload, 0)
 	return n, err
 }
 
@@ -125,6 +131,7 @@ func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
 		tt.manager.PushUploaded(upload)
 	}
 	tt.UploadTotal.Add(upload)
+	tt.usage.add(upload, 0)
 	return
 }
 
@@ -134,11 +141,13 @@ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 			tt.manager.PushUploaded(upload)
 		}
 		tt.UploadTotal.Add(upload)
+		tt.usage.add(upload, 0)
 	}}
 }
 
 func (tt *tcpTracker) Close() error {
 	tt.manager.Leave(tt)
+	tt.usage.leave()
 	return tt.Conn.Close()
 }
 
@@ -181,6 +190,7 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
 	for _, option := range options {
 		option(t.TrackerInfo)
 	}
+	t.TrackerInfo.joinUsage(conn, uploadTotal, downloadTotal)
 
 	manager.Join(t)
 	return t
@@ -209,6 +219,7 @@ func (ut *udpTracker) ReadFrom(b []byte) (int, net.Addr, error) {
 		ut.manager.PushDownloaded(download)
 	}
 	ut.DownloadTotal.Add(download)
+	ut.usage.add(0, download)
 	return n, addr, err
 }
 
@@ -219,6 +230,7 @@ func (ut *udpTracker) WaitReadFrom() (data []byte, put func(), addr net.Addr, er
 		ut.manager.PushDownloaded(download)
 	}
 	ut.DownloadTotal.Add(download)
+	ut.usage.add(0, download)
 	return
 }
 
@@ -229,11 +241,13 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 		ut.manager.PushUploaded(upload)
 	}
 	ut.UploadTotal.Add(upload)
+	ut.usage.add(upload, 0)
 	return n, err
 }
 
 func (ut *udpTracker) Close() error {
 	ut.manager.Leave(ut)
+	ut.usage.leave()
 	return ut.PacketConn.Close()
 }
 
@@ -276,6 +290,7 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 	for _, option := range options {
 		option(ut.TrackerInfo)
 	}
+	ut.TrackerInfo.joinUsage(conn, uploadTotal, downloadTotal)
 
 	manager.Join(ut)
 	return ut

@@ -95,7 +95,7 @@ func NewSingMux(option SingMuxOption, proxy ProxyAdapter) (ProxyAdapter, error) 
 	// TODO
 	// "TCP Brutal is only supported on Linux-based systems"
 
-	singDialer := proxydialer.NewSingDialer(proxydialer.New(proxy, option.Statistic))
+	singDialer := proxydialer.NewSingDialer(proxydialer.NewWithoutUsage(proxy, option.Statistic))
 	client, err := mux.NewClient(mux.Options{
 		Dialer:         singDialer,
 		Logger:         log.SingLogger,

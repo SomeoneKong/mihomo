@@ -13,12 +13,28 @@ import (
 )
 
 type proxyDialer struct {
-	proxy     C.ProxyAdapter
-	statistic bool
+	proxy        C.ProxyAdapter
+	statistic    bool
+	withoutUsage bool
 }
 
 func New(proxy C.ProxyAdapter, statistic bool) C.Dialer {
 	return proxyDialer{proxy: proxy, statistic: statistic}
+}
+
+// NewWithoutUsage is New for the transports a proxy multiplexes its own connections over:
+// their trackers still show in the connection list, but are left out of the per-proxy
+// usage, which already counts the connections they carry.
+func NewWithoutUsage(proxy C.ProxyAdapter, statistic bool) C.Dialer {
+	return proxyDialer{proxy: proxy, statistic: statistic, withoutUsage: true}
+}
+
+func (p proxyDialer) trackerOptions(ctx context.Context) []statistic.TrackerOption {
+	options := []statistic.TrackerOption{statistic.AsUnderlying(ctx)}
+	if p.withoutUsage {
+		options = append(options, statistic.WithoutUsage())
+	}
+	return options
 }
 
 func (p proxyDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -45,7 +61,7 @@ func (p proxyDialer) DialContext(ctx context.Context, network, address string) (
 		return nil, err
 	}
 	if p.statistic {
-		conn = statistic.NewTCPTracker(conn, statistic.DefaultManager, currentMeta, nil, 0, 0, false, statistic.AsUnderlying(ctx))
+		conn = statistic.NewTCPTracker(conn, statistic.DefaultManager, currentMeta, nil, 0, 0, false, p.trackerOptions(ctx)...)
 	}
 	return conn, err
 }
@@ -65,7 +81,7 @@ func (p proxyDialer) listenPacket(ctx context.Context, currentMeta *C.Metadata) 
 		return nil, err
 	}
 	if p.statistic {
-		pc = statistic.NewUDPTracker(pc, statistic.DefaultManager, currentMeta, nil, 0, 0, false, statistic.AsUnderlying(ctx))
+		pc = statistic.NewUDPTracker(pc, statistic.DefaultManager, currentMeta, nil, 0, 0, false, p.trackerOptions(ctx)...)
 	}
 	return pc, nil
 }
