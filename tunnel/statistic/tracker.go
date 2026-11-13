@@ -37,6 +37,7 @@ type TrackerInfo struct {
 	underlying   bool
 	withoutUsage bool
 	usage        *usageCounter
+	matchInput   any
 }
 
 // TrackerOption sets up a tracker before it joins the manager, where readers can see it.

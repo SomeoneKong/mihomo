@@ -55,18 +55,18 @@ func NewRejectWithOption(option RejectOption) *Reject {
 }
 
 func NewReject() *Reject {
-	return &Reject{
+	return markBuiltin(&Reject{
 		Base: NewBase(BaseOption{
 			Name:   "REJECT",
 			Type:   C.Reject,
 			UDP:    true,
 			Prefer: C.DualStack,
 		}),
-	}
+	})
 }
 
 func NewRejectDrop() *Reject {
-	return &Reject{
+	return markBuiltin(&Reject{
 		Base: NewBase(BaseOption{
 			Name:   "REJECT-DROP",
 			Type:   C.RejectDrop,
@@ -74,29 +74,29 @@ func NewRejectDrop() *Reject {
 			Prefer: C.DualStack,
 		}),
 		drop: true,
-	}
+	})
 }
 
 func NewPass() *Reject {
-	return &Reject{
+	return markBuiltin(&Reject{
 		Base: &Base{
 			name:   "PASS",
 			tp:     C.Pass,
 			udp:    true,
 			prefer: C.DualStack,
 		},
-	}
+	})
 }
 
 func NewPassRule() *Reject {
-	return &Reject{
+	return markBuiltin(&Reject{
 		Base: &Base{
 			name:   "PASS-RULE",
 			tp:     C.PassRule,
 			udp:    true,
 			prefer: C.DualStack,
 		},
-	}
+	})
 }
 
 type nopConn struct{}

@@ -90,6 +90,10 @@ func closeConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func closeAllConnections(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("outdated") == "true" {
+		closeOutdatedConnections(w, r)
+		return
+	}
 	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
 		_ = c.Close()
 		return true

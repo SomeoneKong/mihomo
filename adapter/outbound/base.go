@@ -40,6 +40,8 @@ type Base struct {
 	prefer C.DNSPrefer
 	dialer C.Dialer
 	id     uuid.UUID
+	// builtin is set for the outbounds a config makes for the names it reserves
+	builtin bool
 }
 
 type BaseOption struct {
@@ -228,6 +230,7 @@ type conn struct {
 	pdChain     C.Chain
 	adapterAddr string
 	adapterType C.AdapterType
+	adapter     C.ProxyAdapter
 }
 
 func (c *conn) RemoteDestination() string {
@@ -291,7 +294,7 @@ func NewConn(c net.Conn, a C.ProxyAdapter) C.Conn {
 	default:
 		c = N.NewDeadlineConn(c) // most conn from outbound can't handle readDeadline correctly
 	}
-	cc := &conn{N.NewExtendedConn(c), nil, nil, a.Addr(), a.Type()}
+	cc := &conn{N.NewExtendedConn(c), nil, nil, a.Addr(), a.Type(), a}
 	cc.AppendToChains(a)
 	return cc
 }
@@ -305,6 +308,7 @@ type packetConn struct {
 	adapterAddr string
 	resolveUDP  func(ctx context.Context, metadata *C.Metadata) error
 	adapterType C.AdapterType
+	adapter     C.ProxyAdapter
 }
 
 func (c *packetConn) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {
@@ -363,7 +367,7 @@ func NewPacketConn(pc net.PacketConn, a ProxyAdapter) C.PacketConn {
 	default:
 		epc = N.NewDeadlineEnhancePacketConn(epc) // most conn from outbound can't handle readDeadline correctly
 	}
-	cpc := &packetConn{epc, nil, nil, a.Name(), utils.NewUUIDV4().String(), a.Addr(), a.ResolveUDP, a.Type()}
+	cpc := &packetConn{epc, nil, nil, a.Name(), utils.NewUUIDV4().String(), a.Addr(), a.ResolveUDP, a.Type(), a}
 	cpc.AppendToChains(a)
 	return cpc
 }

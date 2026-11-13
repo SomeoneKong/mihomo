@@ -1,6 +1,9 @@
 package executor
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 var (
 	updateMu   sync.Mutex
@@ -19,11 +22,26 @@ func closedChan() chan struct{} {
 // overlapped would otherwise apply in the order they finished parsing, which can put
 // an older config over a newer one.
 func LockUpdate() (unlock func()) {
+	unlock, _ = LockUpdateContext(context.Background())
+	return unlock
+}
+
+// LockUpdateContext is LockUpdate that gives up once ctx is done. Its turn then passes on
+// when it comes, so the updates queued after it still go through in order.
+func LockUpdateContext(ctx context.Context) (unlock func(), err error) {
 	next := make(chan struct{})
 	updateMu.Lock()
 	previous := updateTail
 	updateTail = next
 	updateMu.Unlock()
-	<-previous
-	return func() { close(next) }
+	select {
+	case <-previous:
+		return func() { close(next) }, nil
+	case <-ctx.Done():
+		go func() {
+			<-previous
+			close(next)
+		}()
+		return nil, ctx.Err()
+	}
 }
