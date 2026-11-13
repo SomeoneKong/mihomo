@@ -86,6 +86,7 @@ func applyRoute(cfg *config.Config) {
 func Parse(configBytes []byte, options ...Option) error {
 	var cfg *config.Config
 	var err error
+	defer executor.LockUpdate()()
 
 	if len(configBytes) != 0 {
 		cfg, err = executor.ParseWithBytes(configBytes)

@@ -3,6 +3,7 @@ package route
 import (
 	"net/netip"
 	"path/filepath"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/dialer"
@@ -402,7 +403,18 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 	render.NoContent(w, r)
 }
 
+// configBodyTimeout bounds receiving the body of a config update, which holds off the
+// updates queued after it.
+var configBodyTimeout = 30 * time.Second
+
 func updateConfigs(w http.ResponseWriter, r *http.Request) {
+	defer executor.LockUpdate()()
+	// queued as it came in and received only now: one that never arrives in full must not
+	// hold the others off
+	rc := http.NewResponseController(w)
+	if rc.SetReadDeadline(time.Now().Add(configBodyTimeout)) == nil {
+		defer rc.SetReadDeadline(time.Time{})
+	}
 	req := struct {
 		Path    string `json:"path"`
 		Payload string `json:"payload"`
