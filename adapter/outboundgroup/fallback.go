@@ -21,6 +21,7 @@ type Fallback struct {
 	testUrl        string
 	selected       string
 	expectedStatus string
+	pinRetest      pinRetest
 }
 
 func (f *Fallback) Now() string {
@@ -104,19 +105,12 @@ func (f *Fallback) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 
 func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
 	proxies := f.GetProxies(touch)
+	if pinned := f.pinnedAlive(proxies, touch); pinned != nil {
+		return pinned
+	}
 	for _, proxy := range proxies {
-		if len(f.selected) == 0 {
-			if proxy.AliveForTestUrl(f.testUrl) {
-				return proxy
-			}
-		} else {
-			if proxy.Name() == f.selected {
-				if proxy.AliveForTestUrl(f.testUrl) {
-					return proxy
-				} else {
-					f.selected = ""
-				}
-			}
+		if proxy.AliveForTestUrl(f.testUrl) {
+			return proxy
 		}
 	}
 
