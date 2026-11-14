@@ -71,6 +71,8 @@ type Tailscale struct {
 
 	dnsRegistrationMutex  sync.Mutex
 	unregisterDNSResolver func()
+
+	login tailscaleLogin
 }
 
 type TailscaleOption struct {
@@ -199,12 +201,13 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 			return ips, err
 		},
 		UserLogf: func(format string, args ...any) {
-			log.Infoln("[Tailscale](%s) %s", option.Name, fmt.Sprintf(format, args...))
+			log.Infoln("[Tailscale](%s) %s", option.Name, outbound.login.redact(fmt.Sprintf(format, args...)))
 		},
 		Logf: func(format string, args ...any) {
-			log.Debugln("[Tailscale](%s) %s", option.Name, fmt.Sprintf(format, args...))
+			log.Debugln("[Tailscale](%s) %s", option.Name, outbound.login.redact(fmt.Sprintf(format, args...)))
 		},
 	}
+	outbound.login.rememberConfigKey(option.AuthKey)
 	outbound.dnsResolver = dns.NewResolverFromClient(tailscaleDNSTransport{tailscale: outbound})
 	return outbound, nil
 }
@@ -348,6 +351,7 @@ func (t *Tailscale) takeOverState() error {
 
 	if old != nil && old != t {
 		log.Infoln("[Tailscale](%s) closing the server of %s, which runs on the same state-dir %s", t.option.Name, old.option.Name, key)
+		old.login.takenOver(t.option.Name)
 		// waits for a start of the older outbound in progress
 		_ = old.Close()
 	}
@@ -431,6 +435,11 @@ func (t *Tailscale) applyPrefs(ctx context.Context) error {
 }
 
 func (t *Tailscale) applyExitNodePrefs(ctx context.Context) error {
+	// held from reading the status the exit node is resolved in to the end of the change
+	if err := t.login.lockOp(ctx); err != nil {
+		return err
+	}
+	defer t.login.unlockOp()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -452,7 +461,11 @@ func (t *Tailscale) applyExitNodePrefs(ctx context.Context) error {
 	if err = mp.SetExitNodeIP(t.option.ExitNode, status); err != nil {
 		return err
 	}
-	_, err = lc.EditPrefs(ctx, mp)
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	// carried through by the backend whether or not the request is still there
+	_, err = lc.EditPrefs(context.Background(), mp)
 	return err
 }
 
@@ -642,6 +655,9 @@ func (t *Tailscale) Close() error {
 		t.startErr = errTailscaleClosed
 		close(t.startDone)
 	})
+	// a change of the backend a login began runs to its end; the state dir is released after
+	_ = t.login.lockOp(context.Background())
+	defer t.login.unlockOp()
 	var err error
 	if t.server != nil && t.serverStarted { // tsnet.Server.Close() must not be called before or concurrently with Start.
 		err = t.server.Close()
