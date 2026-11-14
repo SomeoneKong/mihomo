@@ -104,7 +104,13 @@ func newInlineProxyParser(cfg *RawConfig) *inlineProxyParser {
 func (p *inlineProxyParser) parse(mapping map[string]any) (C.Proxy, error) {
 	snapshot, ok := copyProxyValue(mapping)
 	if !ok {
-		return adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(T.Tunnel))
+		proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(T.Tunnel))
+		if err != nil {
+			return nil, err
+		}
+		// never reused, but kept to be told once a config no longer uses it
+		p.parsed[proxy.Name()] = &reusableProxy{proxy: proxy}
+		return proxy, nil
 	}
 	files := proxyFiles(mapping)
 	name, _ := mapping["name"].(string)
@@ -119,7 +125,8 @@ func (p *inlineProxyParser) parse(mapping map[string]any) (C.Proxy, error) {
 		}
 		record = &reusableProxy{mapping: snapshot, files: files, certs: p.certs, proxy: proxy}
 	}
-	p.parsed[name] = record
+	// under the name the proxy decoder read, which may be spelled otherwise in the mapping
+	p.parsed[record.proxy.Name()] = record
 	return record.proxy, nil
 }
 
@@ -187,8 +194,16 @@ func CommitProxyReuse(cfg *Config) {
 		}
 	}
 	proxyReuseMutex.Lock()
+	previous := runningProxies
 	runningProxies, runningEnv = running, env
 	proxyReuseMutex.Unlock()
+
+	// the inline proxies the config no longer uses, removed or replaced by new ones
+	for name, record := range previous {
+		if cfg.Proxies[name] != record.proxy {
+			outbound.Unpublished(record.proxy.Adapter())
+		}
+	}
 
 	// The proxies providers hold already too, such as those of inline providers; the ones
 	// a provider fetches are published as it updates. The inline proxies come last and

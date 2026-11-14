@@ -34,6 +34,14 @@ func Published(adapter C.ProxyAdapter) {
 	}
 }
 
+// Unpublished is called for the inline proxies of the running config that the config
+// published in its place no longer uses.
+func Unpublished(adapter C.ProxyAdapter) {
+	if p, ok := unwrap(adapter).(interface{ unpublished() }); ok {
+		p.unpublished()
+	}
+}
+
 func (w *WireGuard) reusable() bool {
 	return w.runCtx.Err() == nil && !w.initFailed.Load()
 }
