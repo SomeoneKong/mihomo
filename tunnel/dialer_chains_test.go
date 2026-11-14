@@ -1,13 +1,16 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeProxy implements only what dialerChains uses; other C.Proxy methods are not called.
@@ -139,4 +142,47 @@ func TestDialerChains(t *testing.T) {
 		proxies = append(proxies, node)
 		assert.Equal(t, []C.Chain{want}, dialerChains(C.Chain{"n"}, nil, nil, tableOf(proxies, nil)))
 	})
+}
+
+// adaptedConn is a connection made by adapter, moving whatever is written.
+type adaptedConn struct {
+	C.Conn
+	chain   C.Chain
+	adapter C.ProxyAdapter
+}
+
+func (c *adaptedConn) Chains() C.Chain                 { return c.chain }
+func (c *adaptedConn) ProviderChains() C.Chain         { return make(C.Chain, len(c.chain)) }
+func (c *adaptedConn) RemoteDestination() string       { return "" }
+func (c *adaptedConn) OutboundAdapter() C.ProxyAdapter { return c.adapter }
+func (c *adaptedConn) Write(b []byte) (int, error)     { return len(b), nil }
+func (c *adaptedConn) Close() error                    { return nil }
+
+func TestRecordedDialersGiveTheUsageTheRouteTaken(t *testing.T) {
+	relay := &fakeProxy{name: "JP", addr: "jp.example:443"}
+	exit := &fakeProxy{name: "us@JpDialer", addr: "us.example:443", dialer: "JpDialer"}
+	UpdateProxies(map[string]C.Proxy{
+		"JP":          relay,
+		"JpDialer":    &fakeProxy{name: "JpDialer", pick: selects(relay)},
+		"us@JpDialer": exit,
+	}, map[string]P.ProxyProvider{})
+	t.Cleanup(func() { UpdateProxies(nil, nil) })
+
+	ctx, dialerChainsOf := recordDialers(context.Background())
+	// the relay's connection, as a proxy dialer makes it for the exit
+	statistic.NewTCPTracker(&adaptedConn{chain: C.Chain{"JP", "JpDialer"}, adapter: relay}, &statistic.Manager{}, &C.Metadata{}, nil, 0, 0, false, statistic.AsUnderlying(ctx))
+	conn := &adaptedConn{chain: C.Chain{"us@JpDialer", "RouteTest"}, adapter: exit}
+	tracker := statistic.NewTCPTracker(conn, &statistic.Manager{}, &C.Metadata{}, nil, 0, 0, false, dialerChainsOf(conn))
+	defer tracker.Close()
+	_, _ = tracker.Write(make([]byte, 7))
+
+	assert.Equal(t, []C.Chain{{"JP", "JpDialer"}}, tracker.Info().DialerChains)
+	var found *statistic.UsageEntry
+	for _, entry := range statistic.DefaultUsage.Snapshot(0, 1<<62, true).Entries {
+		if entry.Name == "us@JpDialer" && len(entry.Groups) == 1 && entry.Groups[0] == "RouteTest" {
+			found = &entry
+		}
+	}
+	require.NotNil(t, found)
+	assert.Equal(t, [][]string{{"JP", "JpDialer"}}, found.Dialers)
 }

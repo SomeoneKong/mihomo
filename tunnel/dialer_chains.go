@@ -39,11 +39,19 @@ var runningProxies = proxyTable{
 }
 
 // recordDialers returns ctx with a recorder of the underlying connections dials under it make,
-// and a function giving the dialer chains of the connection those dials carry.
+// and a function handing the connection those dials carry what they made, along with its
+// dialer chains.
 func recordDialers(ctx context.Context) (context.Context, func(C.Connection) statistic.TrackerOption) {
 	ctx, recorder := statistic.WithDialerRecorder(ctx)
 	return ctx, func(conn C.Connection) statistic.TrackerOption {
-		return statistic.WithDialerChains(dialerChains(conn.Chains(), conn.ProviderChains(), recorder.Layers(), runningProxies))
+		layers := recorder.Layers()
+		// dialerChains takes the layers it matches out of what it is given
+		chains := statistic.WithDialerChains(dialerChains(conn.Chains(), conn.ProviderChains(), slices.Clone(layers), runningProxies))
+		dialed := statistic.WithDialedLayers(layers)
+		return func(info *statistic.TrackerInfo) {
+			chains(info)
+			dialed(info)
+		}
 	}
 }
 
