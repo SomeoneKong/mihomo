@@ -1,7 +1,6 @@
 package statistic
 
 import (
-	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -27,10 +26,6 @@ type OutboundAdapter interface {
 // met is the proxy the connection was made by; going further down would reach the
 // connection of a dialer proxy it was relayed through.
 func AdapterOf(tracker Tracker) (C.ProxyAdapter, bool) {
-	found, ok := N.FindUpstream[OutboundAdapter](tracker, nil)
-	if !ok {
-		return nil, false
-	}
-	adapter := found.OutboundAdapter()
+	adapter := adapterOfConn(tracker)
 	return adapter, adapter != nil
 }

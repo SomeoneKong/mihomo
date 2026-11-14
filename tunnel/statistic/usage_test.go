@@ -108,7 +108,7 @@ func TestUsageCountsEveryPath(t *testing.T) {
 	_, writeCounters := tracker.UnwrapWriter()
 	writeCounters[0](2000)
 
-	entry := onlyEntry(t, usage.Snapshot(0, testHour))
+	entry := onlyEntry(t, usage.Snapshot(0, testHour, false))
 	assert.Equal(t, UsageEntry{
 		Provider: "sub-a", Name: "HK 01", Type: "Vmess", Addr: "hk1.example.com:443",
 		Buckets: []UsageBucket{{Hour: testHour, Up: 3 + 10 + 11 + 2000, Down: 5 + 100 + 7 + 1000}},
@@ -129,7 +129,7 @@ func TestUsageCreditsTheFirstOutboundMet(t *testing.T) {
 	_, _ = relayTracker.Write(make([]byte, 50))
 	_, _ = exitTracker.Write(make([]byte, 40))
 
-	snapshot := usage.Snapshot(0, testHour)
+	snapshot := usage.Snapshot(0, testHour, false)
 	require.Len(t, snapshot.Entries, 2)
 	assert.Equal(t, UsageEntry{
 		Name: "relay", Type: "Socks5", Addr: "relay.example.com:1080",
@@ -148,7 +148,7 @@ func TestUsageKeepsSameNamedProxiesApart(t *testing.T) {
 	defer inline.Close()
 	defer fromProvider.Close()
 
-	snapshot := usage.Snapshot(0, testHour)
+	snapshot := usage.Snapshot(0, testHour, false)
 	require.Len(t, snapshot.Entries, 2)
 	assert.Equal(t, "", snapshot.Entries[0].Provider)
 	assert.Equal(t, int64(1), snapshot.Entries[0].Buckets[0].Up)
@@ -161,7 +161,7 @@ func TestUsageMarksConnectionsWithoutIdentity(t *testing.T) {
 	conn := &fakeConn{chain: C.Chain{"odd"}, providerChain: C.Chain{"sub"}}
 	NewTCPTracker(conn, &Manager{}, &C.Metadata{}, nil, 9, 0, false)
 
-	entry := onlyEntry(t, usage.Snapshot(0, testHour))
+	entry := onlyEntry(t, usage.Snapshot(0, testHour, false))
 	assert.True(t, entry.Incomplete)
 	assert.Equal(t, "odd", entry.Name)
 	assert.Equal(t, "", entry.Type)
@@ -174,7 +174,7 @@ func TestUsageSkipsTrackersWithoutUsage(t *testing.T) {
 	_, _ = tracker.Write(make([]byte, 10))
 	_ = tracker.Close()
 
-	assert.Empty(t, usage.Snapshot(0, testHour).Entries)
+	assert.Empty(t, usage.Snapshot(0, testHour, false).Entries)
 }
 
 type countingPacketConn struct {
@@ -199,7 +199,7 @@ func TestUsageCountsUDP(t *testing.T) {
 	tracker := NewUDPTracker(&countingPacketConn{chain: C.Chain{"hy"}}, &Manager{}, &C.Metadata{}, nil, 4, 6, false)
 	_, _ = tracker.WriteTo(make([]byte, 20), nil)
 
-	entry := onlyEntry(t, usage.Snapshot(0, testHour))
+	entry := onlyEntry(t, usage.Snapshot(0, testHour, false))
 	assert.Equal(t, "Hysteria2", entry.Type)
 	assert.Equal(t, []UsageBucket{{Hour: testHour, Up: 24, Down: 6}}, entry.Buckets)
 }
@@ -209,7 +209,7 @@ func TestUsageSealsPastHours(t *testing.T) {
 	tracker := NewTCPTracker(outboundConn("n", "", C.Vmess, "a:1"), &Manager{}, &C.Metadata{}, nil, 0, 0, false)
 	_, _ = tracker.Write(make([]byte, 10))
 
-	snapshot := usage.Snapshot(0, testHour+5)
+	snapshot := usage.Snapshot(0, testHour+5, false)
 	assert.Equal(t, testHour, snapshot.Hour)
 	assert.Equal(t, testHour-1, snapshot.Settled)
 	assert.Equal(t, testHour, snapshot.RetainedSince)
@@ -218,7 +218,7 @@ func TestUsageSealsPastHours(t *testing.T) {
 	usage.tick()
 	_, _ = tracker.Write(make([]byte, 20))
 
-	snapshot = usage.Snapshot(0, testHour+5)
+	snapshot = usage.Snapshot(0, testHour+5, false)
 	assert.Equal(t, testHour+1, snapshot.Hour)
 	assert.Equal(t, testHour, snapshot.Settled)
 	assert.Equal(t, []UsageBucket{{Hour: testHour, Up: 10}, {Hour: testHour + 1, Up: 20}}, onlyEntry(t, snapshot).Buckets)
@@ -254,7 +254,7 @@ func TestUsageWaitsForWritesInFlight(t *testing.T) {
 	// Writes arriving after the seal go to the current hour.
 	_, _ = tracker.Write(make([]byte, 3))
 	assert.Equal(t, []UsageBucket{{Hour: testHour, Up: 6}, {Hour: testHour + 1, Up: 3}},
-		onlyEntry(t, usage.Snapshot(0, testHour+1)).Buckets)
+		onlyEntry(t, usage.Snapshot(0, testHour+1, false)).Buckets)
 }
 
 func TestUsageSettledHoursAreFinal(t *testing.T) {
@@ -282,9 +282,9 @@ func TestUsageSettledHoursAreFinal(t *testing.T) {
 	for hour := testHour + 1; hour <= testHour+20; hour++ {
 		clock.setHour(hour)
 		usage.tick()
-		settled := usage.Snapshot(0, hour)
+		settled := usage.Snapshot(0, hour, false)
 		time.Sleep(time.Millisecond)
-		again := usage.Snapshot(0, hour)
+		again := usage.Snapshot(0, hour, false)
 		for i, b := range onlyEntry(t, settled).Buckets {
 			if b.Hour <= settled.Settled {
 				assert.Equal(t, b, onlyEntry(t, again).Buckets[i], "hour %d changed after it settled", b.Hour)
@@ -295,7 +295,7 @@ func TestUsageSettledHoursAreFinal(t *testing.T) {
 	wg.Wait()
 
 	var total int64
-	for _, b := range onlyEntry(t, usage.Snapshot(0, testHour+20)).Buckets {
+	for _, b := range onlyEntry(t, usage.Snapshot(0, testHour+20, false)).Buckets {
 		total += b.Up
 	}
 	assert.Equal(t, tracker.UploadTotal.Load(), total)
@@ -311,7 +311,7 @@ func TestUsageHourNeverGoesBack(t *testing.T) {
 	usage.tick()
 	_, _ = tracker.Write(make([]byte, 8))
 
-	snapshot := usage.Snapshot(0, testHour+2)
+	snapshot := usage.Snapshot(0, testHour+2, false)
 	assert.Equal(t, testHour+2, snapshot.Hour)
 	assert.Equal(t, testHour+1, snapshot.Settled)
 	assert.Equal(t, []UsageBucket{{Hour: testHour + 2, Up: 8}}, onlyEntry(t, snapshot).Buckets)
@@ -325,13 +325,13 @@ func TestUsageExpiresOldHoursAndIdleEntries(t *testing.T) {
 
 	clock.setHour(testHour + UsageRetainHours)
 	usage.tick()
-	snapshot := usage.Snapshot(0, testHour+UsageRetainHours)
+	snapshot := usage.Snapshot(0, testHour+UsageRetainHours, false)
 	assert.Equal(t, testHour, snapshot.RetainedSince)
 	assert.Len(t, snapshot.Entries, 2)
 
 	clock.setHour(testHour + UsageRetainHours + 1)
 	usage.tick()
-	snapshot = usage.Snapshot(0, testHour+UsageRetainHours+1)
+	snapshot = usage.Snapshot(0, testHour+UsageRetainHours+1, false)
 	assert.Equal(t, testHour+1, snapshot.RetainedSince)
 	assert.Empty(t, snapshot.Entries)
 
@@ -345,7 +345,7 @@ func TestUsageExpiresOldHoursAndIdleEntries(t *testing.T) {
 	// The open tracker keeps counting into its entry.
 	_, _ = open.Write(make([]byte, 4))
 	assert.Equal(t, []UsageBucket{{Hour: testHour + UsageRetainHours + 1, Up: 4}},
-		onlyEntry(t, usage.Snapshot(0, testHour+UsageRetainHours+1)).Buckets)
+		onlyEntry(t, usage.Snapshot(0, testHour+UsageRetainHours+1, false)).Buckets)
 }
 
 func TestUsageReleasesOnce(t *testing.T) {
@@ -369,7 +369,7 @@ func TestUsageOverflow(t *testing.T) {
 	tracker := NewTCPTracker(outboundConn("late", "", C.Vmess, "a:1"), &Manager{}, &C.Metadata{}, nil, 3, 0, false)
 	_ = tracker.Close()
 
-	snapshot := usage.Snapshot(0, testHour)
+	snapshot := usage.Snapshot(0, testHour, false)
 	assert.True(t, snapshot.Overflow)
 	entry := onlyEntry(t, snapshot)
 	assert.Equal(t, UsageOverflowName, entry.Name)
@@ -388,8 +388,8 @@ func TestUsageSnapshotRange(t *testing.T) {
 	}
 
 	assert.Equal(t, []UsageBucket{{Hour: testHour + 1, Up: 1}, {Hour: testHour + 3, Up: 1}},
-		onlyEntry(t, usage.Snapshot(testHour+1, testHour+3)).Buckets)
-	assert.Empty(t, usage.Snapshot(testHour+2, testHour+2).Entries)
+		onlyEntry(t, usage.Snapshot(testHour+1, testHour+3, false)).Buckets)
+	assert.Empty(t, usage.Snapshot(testHour+2, testHour+2, false).Entries)
 }
 
 func TestUsageExpiryWaitsForSnapshots(t *testing.T) {
@@ -428,7 +428,7 @@ func TestUsageRecyclesIdleEntriesFromTheStart(t *testing.T) {
 	assert.Zero(t, left)
 
 	NewTCPTracker(outboundConn("late", "", C.Vmess, "a:1"), &Manager{}, &C.Metadata{}, nil, 3, 0, false)
-	snapshot := usage.Snapshot(0, testHour+2)
+	snapshot := usage.Snapshot(0, testHour+2, false)
 	assert.False(t, snapshot.Overflow)
 	assert.Equal(t, "late", onlyEntry(t, snapshot).Name)
 }
@@ -447,5 +447,5 @@ func TestUsageCountsWritesThatOutliveTheirEntry(t *testing.T) {
 	// The tracker's I/O finished before its close and counts only now.
 	tracker.usage.add(7, 0)
 	assert.Equal(t, []UsageBucket{{Hour: testHour + 2, Up: 7}},
-		onlyEntry(t, usage.Snapshot(0, testHour+2)).Buckets)
+		onlyEntry(t, usage.Snapshot(0, testHour+2, false)).Buckets)
 }

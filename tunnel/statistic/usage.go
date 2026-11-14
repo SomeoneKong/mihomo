@@ -1,6 +1,7 @@
 package statistic
 
 import (
+	"encoding/json"
 	"runtime"
 	"slices"
 	"strings"
@@ -35,7 +36,9 @@ type OutboundIdentity interface {
 	OutboundIdentity() (adapterType C.AdapterType, addr string)
 }
 
-// UsageKey identifies the proxy a connection's traffic is credited to.
+// UsageKey identifies what a connection's traffic is credited to: the proxy that made it,
+// and whether the connection relays another proxy's traffic or carries traffic of its own
+// along a route.
 type UsageKey struct {
 	Provider string
 	Name     string
@@ -43,15 +46,27 @@ type UsageKey struct {
 	Addr     string
 	// Incomplete is set when the connection did not reveal the adapter that made it.
 	Incomplete bool
+	// Relay is set for the connections a dialer proxy made to carry another proxy's.
+	Relay bool
+	// Route is the UsageRoute of the other connections, encoded.
+	Route string
 }
 
-func usageKeyOf(conn any, chain, providerChain C.Chain) UsageKey {
+// UsageRoute is the route a connection took: the groups from the proxy that made it out to
+// the one a rule chose, and, layer by layer, the dialer proxies it reached its server
+// through, each as the node and then its groups.
+type UsageRoute struct {
+	Groups  []string   `json:"groups,omitempty"`
+	Dialers [][]string `json:"dialers,omitempty"`
+}
+
+func usageKeyOf(conn any, info *TrackerInfo, adapter C.ProxyAdapter) UsageKey {
 	var key UsageKey
-	if len(chain) > 0 {
-		key.Name = chain[0]
+	if len(info.Chain) > 0 {
+		key.Name = info.Chain[0]
 	}
-	if len(providerChain) > 0 {
-		key.Provider = providerChain[0]
+	if len(info.ProviderChain) > 0 {
+		key.Provider = info.ProviderChain[0]
 	}
 	// The first identity met is the proxy this connection was made by; going further down
 	// would reach the connection of a dialer proxy it was relayed through.
@@ -62,6 +77,16 @@ func usageKeyOf(conn any, chain, providerChain C.Chain) UsageKey {
 	} else {
 		key.Incomplete = true
 	}
+	if info.underlying {
+		key.Relay = true
+		return key
+	}
+	route := UsageRoute{Dialers: usageDialers(adapter, info.dialedLayers)}
+	if len(info.Chain) > 1 {
+		route.Groups = slices.Clone(info.Chain[1:])
+	}
+	encoded, _ := json.Marshal(route)
+	key.Route = string(encoded)
 	return key
 }
 
@@ -147,9 +172,11 @@ type Usage struct {
 	settled       atomic.Int64
 	retainedSince atomic.Int64
 
-	mu       sync.Mutex
-	entries  map[UsageKey]*usageEntry
-	overflow *usageEntry
+	mu      sync.Mutex
+	entries map[UsageKey]*usageEntry
+	// overflow takes the traffic of keys beyond UsageMaxEntries: that of connections of
+	// their own first, that of relays second.
+	overflow [2]*usageEntry
 
 	// snapshotMu keeps expiry from changing the retained range while a snapshot is copied.
 	snapshotMu sync.RWMutex
@@ -164,7 +191,8 @@ func newUsage(now func() time.Time) *Usage {
 		startedAt: startedAt,
 		entries:   make(map[UsageKey]*usageEntry),
 	}
-	u.overflow = &usageEntry{usage: u, key: UsageKey{Name: UsageOverflowName}}
+	u.overflow[0] = &usageEntry{usage: u, key: UsageKey{Name: UsageOverflowName}}
+	u.overflow[1] = &usageEntry{usage: u, key: UsageKey{Name: UsageOverflowName, Relay: true}}
 	u.hour.Store(hour)
 	u.settled.Store(hour - 1)
 	u.retainedSince.Store(hour)
@@ -196,10 +224,14 @@ func (u *Usage) acquire(key UsageKey) *usageEntry {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	e := u.lookup(key)
-	if e != u.overflow {
+	if !u.isOverflow(e) {
 		e.refs++
 	}
 	return e
+}
+
+func (u *Usage) isOverflow(e *usageEntry) bool {
+	return e == u.overflow[0] || e == u.overflow[1]
 }
 
 // entryOf returns the registered entry of key without taking a reference.
@@ -214,7 +246,10 @@ func (u *Usage) lookup(key UsageKey) *usageEntry {
 		return e
 	}
 	if len(u.entries) >= UsageMaxEntries {
-		return u.overflow
+		if key.Relay {
+			return u.overflow[1]
+		}
+		return u.overflow[0]
 	}
 	e := &usageEntry{usage: u, key: key}
 	u.entries[key] = e
@@ -222,7 +257,7 @@ func (u *Usage) lookup(key UsageKey) *usageEntry {
 }
 
 func (u *Usage) release(e *usageEntry) {
-	if e == u.overflow {
+	if u.isOverflow(e) {
 		return
 	}
 	u.mu.Lock()
@@ -233,11 +268,11 @@ func (u *Usage) release(e *usageEntry) {
 func (u *Usage) allEntries() []*usageEntry {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	entries := make([]*usageEntry, 0, len(u.entries)+1)
+	entries := make([]*usageEntry, 0, len(u.entries)+len(u.overflow))
 	for _, e := range u.entries {
 		entries = append(entries, e)
 	}
-	return append(entries, u.overflow)
+	return append(entries, u.overflow[:]...)
 }
 
 // seal marks the buckets of hours before hour as sealed, waits for the writes already in
@@ -280,7 +315,9 @@ func (u *Usage) expire(hour int64) {
 			delete(u.entries, key)
 		}
 	}
-	u.overflow.dropBefore(retainedSince, hour, false)
+	for _, e := range u.overflow {
+		e.dropBefore(retainedSince, hour, false)
+	}
 }
 
 // dropBefore removes the buckets before retainedSince. With detach, an entry no tracker
@@ -313,14 +350,17 @@ type UsageBucket struct {
 	Down int64 `json:"down"`
 }
 
-// UsageEntry is the traffic of one proxy.
+// UsageEntry is the traffic of one proxy, or with routes, of one of its kinds and routes.
 type UsageEntry struct {
-	Provider   string        `json:"provider"`
-	Name       string        `json:"name"`
-	Type       string        `json:"type"`
-	Addr       string        `json:"addr"`
-	Incomplete bool          `json:"incomplete"`
-	Buckets    []UsageBucket `json:"buckets"`
+	Provider   string `json:"provider"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Addr       string `json:"addr"`
+	Incomplete bool   `json:"incomplete"`
+	// Kind is "relay" for the traffic the proxy relayed for others, "exit" for the rest.
+	Kind string `json:"kind,omitempty"`
+	UsageRoute
+	Buckets []UsageBucket `json:"buckets"`
 }
 
 // UsageSnapshot is the per-proxy usage of a range of hours.
@@ -334,11 +374,14 @@ type UsageSnapshot struct {
 	Settled       int64        `json:"settled"`
 	RetainedSince int64        `json:"retainedSince"`
 	Overflow      bool         `json:"overflow"`
+	Routes        bool         `json:"routes,omitempty"` // the entries are split by kind and route
 	Entries       []UsageEntry `json:"entries"`
 }
 
-// Snapshot returns the non-zero buckets of hours from since to until, both inclusive.
-func (u *Usage) Snapshot(since, until int64) *UsageSnapshot {
+// Snapshot returns the non-zero buckets of hours from since to until, both inclusive. With
+// routes, there is an entry per kind and route of each proxy; without, one per proxy, as
+// clients that key what they keep by proxy expect.
+func (u *Usage) Snapshot(since, until int64, routes bool) *UsageSnapshot {
 	u.snapshotMu.RLock()
 	snapshot := &UsageSnapshot{
 		Instance:      u.instance,
@@ -346,16 +389,19 @@ func (u *Usage) Snapshot(since, until int64) *UsageSnapshot {
 		RetainedSince: u.retainedSince.Load(),
 		Settled:       u.settled.Load(),
 		Hour:          u.hour.Load(),
+		Routes:        routes,
 		Entries:       []UsageEntry{},
 	}
+	var keys []UsageKey
 	for _, e := range u.allEntries() {
 		buckets := e.collect(since, until)
 		if len(buckets) == 0 {
 			continue
 		}
-		if e == u.overflow {
+		if u.isOverflow(e) {
 			snapshot.Overflow = true
 		}
+		keys = append(keys, e.key)
 		snapshot.Entries = append(snapshot.Entries, UsageEntry{
 			Provider:   e.key.Provider,
 			Name:       e.key.Name,
@@ -367,12 +413,25 @@ func (u *Usage) Snapshot(since, until int64) *UsageSnapshot {
 	}
 	u.snapshotMu.RUnlock()
 
-	slices.SortFunc(snapshot.Entries, func(a, b UsageEntry) int {
+	if routes {
+		for i, key := range keys {
+			entry := &snapshot.Entries[i]
+			entry.Kind = "exit"
+			if key.Relay {
+				entry.Kind = "relay"
+			}
+			_ = json.Unmarshal([]byte(key.Route), &entry.UsageRoute)
+		}
+	} else {
+		snapshot.Entries = mergeByProxy(snapshot.Entries)
+	}
+	slices.SortStableFunc(snapshot.Entries, func(a, b UsageEntry) int {
 		for _, order := range [...]int{
 			strings.Compare(a.Provider, b.Provider),
 			strings.Compare(a.Name, b.Name),
 			strings.Compare(a.Type, b.Type),
 			strings.Compare(a.Addr, b.Addr),
+			strings.Compare(a.Kind, b.Kind),
 		} {
 			if order != 0 {
 				return order
@@ -381,6 +440,43 @@ func (u *Usage) Snapshot(since, until int64) *UsageSnapshot {
 		return 0
 	})
 	return snapshot
+}
+
+// mergeByProxy adds up the entries of the same proxy, hour by hour.
+func mergeByProxy(entries []UsageEntry) []UsageEntry {
+	type proxy struct {
+		provider, name, adapterType, addr string
+		incomplete                        bool
+	}
+	index := map[proxy]int{}
+	merged := make([]UsageEntry, 0, len(entries)) // an empty list, not null
+	for _, entry := range entries {
+		id := proxy{entry.Provider, entry.Name, entry.Type, entry.Addr, entry.Incomplete}
+		i, ok := index[id]
+		if !ok {
+			index[id] = len(merged)
+			merged = append(merged, entry)
+			continue
+		}
+		merged[i].Buckets = addBuckets(merged[i].Buckets, entry.Buckets)
+	}
+	return merged
+}
+
+func addBuckets(a, b []UsageBucket) []UsageBucket {
+	sum := make([]UsageBucket, 0, len(a)+len(b))
+	for len(a) > 0 || len(b) > 0 {
+		switch {
+		case len(b) == 0 || len(a) > 0 && a[0].Hour < b[0].Hour:
+			sum, a = append(sum, a[0]), a[1:]
+		case len(a) == 0 || b[0].Hour < a[0].Hour:
+			sum, b = append(sum, b[0]), b[1:]
+		default:
+			sum = append(sum, UsageBucket{Hour: a[0].Hour, Up: a[0].Up + b[0].Up, Down: a[0].Down + b[0].Down})
+			a, b = a[1:], b[1:]
+		}
+	}
+	return sum
 }
 
 func (e *usageEntry) collect(since, until int64) []UsageBucket {
@@ -428,10 +524,16 @@ func WithoutUsage() TrackerOption {
 	}
 }
 
+// joinUsage, once the options are applied, reports an underlying connection to the dial it
+// was made for, along with the adapter that made it, and has the tracker's traffic counted.
 func (info *TrackerInfo) joinUsage(conn any, upload, download int64) {
+	adapter := adapterOfConn(conn)
+	if info.recorder != nil {
+		info.recorder.record(info, adapter)
+	}
 	if info.withoutUsage {
 		return
 	}
-	info.usage = &usageCounter{entry: DefaultUsage.acquire(usageKeyOf(conn, info.Chain, info.ProviderChain))}
+	info.usage = &usageCounter{entry: DefaultUsage.acquire(usageKeyOf(conn, info, adapter))}
 	info.usage.add(upload, download)
 }

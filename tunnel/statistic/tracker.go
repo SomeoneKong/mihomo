@@ -38,6 +38,8 @@ type TrackerInfo struct {
 	withoutUsage bool
 	usage        *usageCounter
 	matchInput   any
+	recorder     *DialerRecorder // of the dial this underlying connection was made for
+	dialedLayers []DialedLayer   // the underlying connections this connection's dial made
 }
 
 // TrackerOption sets up a tracker before it joins the manager, where readers can see it.
@@ -51,13 +53,12 @@ func WithDialerChains(chains []C.Chain) TrackerOption {
 }
 
 // AsUnderlying marks a connection a proxy dialer made under ctx to carry another proxy's
-// traffic, and reports it to the recorder of the connection it is made for.
+// traffic, and reports it to the recorder of the connection it is made for once the tracker
+// is set up.
 func AsUnderlying(ctx context.Context) TrackerOption {
 	return func(info *TrackerInfo) {
 		info.underlying = true
-		if recorder, ok := ctx.Value(dialerRecorderKey{}).(*DialerRecorder); ok {
-			recorder.record(info)
-		}
+		info.recorder, _ = ctx.Value(dialerRecorderKey{}).(*DialerRecorder)
 	}
 }
 
