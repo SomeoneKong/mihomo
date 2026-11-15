@@ -24,31 +24,32 @@ func (c *PacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 }
 
 func (c *PacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	n, addr, err := c.EnhancePacketConn.ReadFrom(b)
-	if err != nil {
-		return n, addr, err
+	for {
+		n, addr, err := c.EnhancePacketConn.ReadFrom(b)
+		if err != nil {
+			return n, addr, err
+		}
+		decoded, err := c.DecodePacket(b[:n])
+		if err != nil {
+			continue // drop the malformed packet
+		}
+		copy(b, decoded)
+		return len(decoded), addr, nil
 	}
-	decoded, err := c.DecodePacket(b[:n])
-	if err != nil {
-		return n, addr, err
-	}
-	copy(b, decoded)
-	return len(decoded), addr, nil
 }
 
 func (c *PacketConn) WaitReadFrom() (data []byte, put func(), addr net.Addr, err error) {
-	data, put, addr, err = c.EnhancePacketConn.WaitReadFrom()
-	if err != nil {
-		return
-	}
-	data, err = c.DecodePacket(data)
-	if err != nil {
-		if put != nil {
+	for {
+		data, put, addr, err = c.EnhancePacketConn.WaitReadFrom()
+		if err != nil {
+			return
+		}
+		data, err = c.DecodePacket(data)
+		if err == nil {
+			return
+		}
+		if put != nil { // drop the malformed packet
 			put()
 		}
-		data = nil
-		put = nil
-		return
 	}
-	return
 }
