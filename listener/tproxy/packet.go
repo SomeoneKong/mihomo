@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/common/pool"
@@ -32,6 +33,15 @@ func (c *packet) WriteBack(b []byte, addr net.Addr) (n int, err error) {
 		return
 	}
 	n, err = tc.Write(b)
+	if errors.Is(err, net.ErrClosed) { // released for being idle since it was looked up
+		if tc, err = createOrGetLocalConn(rAddr, c.lAddr, c.tunnel, c.additions...); err != nil {
+			return
+		}
+		n, err = tc.Write(b)
+	}
+	if err == nil {
+		_ = tc.SetReadDeadline(time.Now().Add(localConnIdleTimeout))
+	}
 	return
 }
 
@@ -96,22 +106,6 @@ func listenLocalConn(rAddr, lAddr netip.AddrPort, tunnel C.Tunnel, additions ...
 	if err != nil {
 		return nil, err
 	}
-	go func() {
-		log.Debugln("TProxy listenLocalConn rAddr=%s lAddr=%s", rAddr, lAddr)
-		for {
-			buf := pool.Get(pool.UDPBufferSize)
-			br, err := lc.Read(buf)
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					log.Debugln("TProxy local conn listener exit.. rAddr=%s lAddr=%s", rAddr, lAddr)
-					pool.Put(buf)
-					return
-				}
-			}
-			// since following localPackets are pass through this socket which listen rAddr
-			// I choose current listener as packet's packet conn
-			handlePacketConn(lc, tunnel, buf[:br], lAddr, rAddr, additions...)
-		}
-	}()
+	go serveLocalConn(lc, rAddr, lAddr, tunnel, additions...)
 	return lc, nil
 }
