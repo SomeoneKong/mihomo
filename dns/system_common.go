@@ -70,4 +70,13 @@ func (c *systemClient) getDnsClients() ([]dnsClient, error) {
 	return nil, err
 }
 
-func (c *systemClient) ResetConnection() {}
+// ResetConnection also makes the next query read the system nameservers
+// again, as the network change that usually triggers it may change them.
+func (c *systemClient) ResetConnection() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastFlush = time.Time{}
+	for _, sdc := range c.dnsClients {
+		sdc.ResetConnection()
+	}
+}
