@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/netip"
+	"unsafe"
+
+	"github.com/metacubex/mihomo/common/utils"
 
 	"go4.org/netipx"
 )
@@ -57,7 +60,7 @@ func ReadIpCidrSet(r io.Reader) (ss *IpCidrSet, err error) {
 	if length < 1 {
 		return nil, errors.New("length is invalid")
 	}
-	ss.rr = make([]netipx.IPRange, length)
+	ss.rr = make([]netipx.IPRange, 0, utils.PreallocLen(length, int(unsafe.Sizeof(netipx.IPRange{}))))
 	for i := int64(0); i < length; i++ {
 		var a16 [16]byte
 		err = binary.Read(r, binary.BigEndian, &a16)
@@ -70,7 +73,7 @@ func ReadIpCidrSet(r io.Reader) (ss *IpCidrSet, err error) {
 			return nil, err
 		}
 		to := netip.AddrFrom16(a16).Unmap()
-		ss.rr[i] = netipx.IPRangeFrom(from, to)
+		ss.rr = append(ss.rr, netipx.IPRangeFrom(from, to))
 	}
 
 	return ss, nil
