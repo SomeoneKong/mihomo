@@ -97,6 +97,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
 
 	updateExperimental(cfg.Experimental)
 	updateUsers(cfg.Users)
+	outboundgroup.BeginPublish(cfg.Proxies)
+	defer outboundgroup.Activate(cfg.Proxies, cfg.ProbeCensusHours)
 	updateProxies(cfg.Proxies, cfg.Providers)
 	// after the replaced providers are closed: an update they were still parsing may
 	// have registered outbounds of their own
