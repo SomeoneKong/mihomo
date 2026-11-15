@@ -83,6 +83,31 @@ func (c *FakeIpStore) PutByIP(ip netip.Addr, host string) {
 	}
 }
 
+// PutByIPWith puts the record of ip and records of hosts in one transaction.
+func (c *FakeIpStore) PutByIPWith(ip netip.Addr, host string, hosts map[string]netip.Addr) {
+	if c.DB == nil {
+		return
+	}
+	err := c.DB.Batch(func(t *bbolt.Tx) error {
+		bucket, err := t.CreateBucketIfNotExists(c.bucketName)
+		if err != nil {
+			return err
+		}
+		if err := bucket.Put(ip.AsSlice(), []byte(host)); err != nil {
+			return err
+		}
+		for name, addr := range hosts {
+			if err := bucket.Put([]byte(name), addr.AsSlice()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Warnln("[CacheFile] write cache to %s failed: %s", c.DB.Path(), err.Error())
+	}
+}
+
 func (c *FakeIpStore) DelByIP(ip netip.Addr) {
 	if c.DB == nil {
 		return
