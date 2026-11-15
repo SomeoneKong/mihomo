@@ -22,6 +22,7 @@ type Fallback struct {
 	selected       string
 	expectedStatus string
 	pinRetest      pinRetest
+	od             *onDemand // set when the group tests its members on demand
 }
 
 func (f *Fallback) Now() string {
@@ -31,6 +32,9 @@ func (f *Fallback) Now() string {
 
 // DialContext implements C.ProxyAdapter
 func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+	if f.od != nil {
+		return f.od.dialContext(ctx, metadata)
+	}
 	proxy := f.findAliveProxy(true)
 	c, err := proxy.DialContext(ctx, metadata)
 	if err == nil {
@@ -54,6 +58,9 @@ func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata) (C.Con
 
 // ListenPacketContext implements C.ProxyAdapter
 func (f *Fallback) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {
+	if f.od != nil {
+		return f.od.listenPacketContext(ctx, metadata)
+	}
 	proxy := f.findAliveProxy(true)
 	pc, err := proxy.ListenPacketContext(ctx, metadata)
 	if err == nil {
@@ -104,6 +111,9 @@ func (f *Fallback) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 }
 
 func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
+	if f.od != nil {
+		return f.od.selectProxy(nil, touch)
+	}
 	proxies := f.GetProxies(touch)
 	if pinned := f.pinnedAlive(proxies, touch); pinned != nil {
 		return pinned
@@ -130,6 +140,10 @@ func (f *Fallback) Set(name string) error {
 		return errors.New("proxy not exist")
 	}
 
+	if f.od != nil {
+		f.od.setPinned(name, "user")
+		return nil
+	}
 	f.selected = name
 	if !p.AliveForTestUrl(f.testUrl) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
@@ -142,6 +156,10 @@ func (f *Fallback) Set(name string) error {
 }
 
 func (f *Fallback) ForceSet(name string) {
+	if f.od != nil {
+		f.od.setPinned(name, "restore")
+		return
+	}
 	f.selected = name
 }
 
@@ -154,7 +172,7 @@ func (f *Fallback) Proxies() []C.Proxy {
 }
 
 func NewFallback(option GroupCommonOption, fallbackOption FallbackOption, emptyFallback C.Proxy, providers []P.ProxyProvider) (*Fallback, error) {
-	return &Fallback{
+	f := &Fallback{
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:           option.Name,
 			Type:           C.Fallback,
@@ -171,5 +189,9 @@ func NewFallback(option GroupCommonOption, fallbackOption FallbackOption, emptyF
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,
-	}, nil
+	}
+	if option.Probe == ProbeOnDemand {
+		f.od = newOnDemand(f, option.URL, option.ExpectedStatus, f.testTimeout)
+	}
+	return f, nil
 }
