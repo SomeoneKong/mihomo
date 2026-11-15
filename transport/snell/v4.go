@@ -1,6 +1,7 @@
 package snell
 
 import (
+	"bufio"
 	"crypto/cipher"
 	cryptorand "crypto/rand"
 	"encoding/binary"
@@ -47,7 +48,7 @@ func (c *v4Conn) initReader() error {
 	if err != nil {
 		return err
 	}
-	c.r = &v4Reader{Reader: c.Conn, aead: aead}
+	c.r = &v4Reader{Reader: bufio.NewReader(c.Conn), aead: aead} // frames are small and each is read in two parts
 	return nil
 }
 
