@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
-	"io"
 	"net"
 
 	"github.com/metacubex/mihomo/common/pool"
@@ -13,6 +13,8 @@ import (
 	"github.com/metacubex/http"
 	"github.com/metacubex/randv2"
 )
+
+var errHTTPResponseHeaderTooLong = errors.New("simple-obfs: http response header too long")
 
 // HTTPObfs is shadowsocks http simple-obfs implementation
 type HTTPObfs struct {
@@ -38,15 +40,25 @@ func (ho *HTTPObfs) Read(b []byte) (int, error) {
 
 	if ho.firstResponse {
 		buf := pool.Get(pool.RelayBufferSize)
-		n, err := ho.Conn.Read(buf)
-		if err != nil {
-			pool.Put(buf)
-			return 0, err
-		}
-		idx := bytes.Index(buf[:n], []byte("\r\n\r\n"))
-		if idx == -1 {
-			pool.Put(buf)
-			return 0, io.EOF
+		// the header may arrive in several reads
+		n, idx := 0, -1
+		for idx == -1 {
+			if n == len(buf) {
+				pool.Put(buf)
+				return 0, errHTTPResponseHeaderTooLong
+			}
+			m, err := ho.Conn.Read(buf[n:])
+			from := n - 3 // the delimiter may straddle two reads
+			if from < 0 {
+				from = 0
+			}
+			n += m
+			if idx = bytes.Index(buf[from:n], []byte("\r\n\r\n")); idx != -1 {
+				idx += from
+			} else if err != nil {
+				pool.Put(buf)
+				return 0, err
+			}
 		}
 		ho.firstResponse = false
 		length := n - (idx + 4)
