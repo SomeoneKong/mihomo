@@ -9,6 +9,7 @@ import (
 	"github.com/metacubex/mihomo/component/loopback"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 )
 
 type Direct struct {
@@ -29,6 +30,10 @@ func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn,
 	opts := d.DialOptions()
 	opts = append(opts, dialer.WithResolver(resolver.DirectHostResolver))
 	c, err := dialer.DialContext(ctx, "tcp", metadata.RemoteAddress(), opts...)
+	if err != nil && mappedHostUnresolvable(metadata, err) {
+		log.Debugln("[DIRECT] %s does not resolve (%v), dialing %s", metadata.Host, err, metadata.DstIP)
+		c, err = dialer.DialContext(ctx, "tcp", metadata.Pure().RemoteAddress(), opts...)
+	}
 	if err != nil {
 		return nil, err
 	}
