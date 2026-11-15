@@ -149,6 +149,8 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 		writer:  pipeWriter,
 		created: make(chan struct{}),
 	}
+	uploaded, markUploaded := newUploadSignal()
+	conn.uploaded = uploaded
 	c.count.Add(1)
 	conn.closeFn = once.OnceFunc(func() {
 		c.count.Add(-1)
@@ -167,6 +169,7 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 			default: // GotConn maybe called multiple times, ignore the second and later calls
 			}
 		},
+		WroteRequest: func(httptrace.WroteRequestInfo) { markUploaded() },
 	})
 
 	var requestErr atomic2.TypedValue[error]
@@ -174,12 +177,14 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 		request = request.WithContext(streamCtx)
 		response, err := c.roundTripper.RoundTrip(request)
 		if err != nil {
+			markUploaded()
 			requestErr.Store(err)
 			close(gotConn)
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
 		} else if response.StatusCode != http.StatusOK {
+			markUploaded()
 			_ = response.Body.Close()
 			err = fmt.Errorf("unexpected status code: %d", response.StatusCode)
 			requestErr.Store(err)
@@ -194,6 +199,7 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 
 	select {
 	case <-ctx.Done():
+		conn.uploaded = nil // nothing was written, so Close need not linger
 		return ctx.Err()
 	case <-gotConn:
 		return requestErr.Load()
