@@ -498,13 +498,17 @@ func (e *usageEntry) collect(since, until int64) []UsageBucket {
 
 // usageCounter credits a tracker's traffic to the proxy that made its connection.
 type usageCounter struct {
-	entry   *usageEntry
-	release sync.Once
+	entry    *usageEntry
+	release  sync.Once
+	activity *activity // renews the groups the connection was handed out by
 }
 
 func (c *usageCounter) add(up, down int64) {
 	if c != nil {
 		c.entry.add(up, down)
+		if down > 0 && c.activity != nil {
+			c.activity.renew()
+		}
 	}
 }
 
@@ -535,5 +539,8 @@ func (info *TrackerInfo) joinUsage(conn any, upload, download int64) {
 		return
 	}
 	info.usage = &usageCounter{entry: DefaultUsage.acquire(usageKeyOf(conn, info, adapter))}
+	if !info.probe {
+		info.usage.activity = activityOf(conn)
+	}
 	info.usage.add(upload, download)
 }
