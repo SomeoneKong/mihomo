@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/httputils"
@@ -103,6 +104,11 @@ type httpConn struct {
 	closeFn   func()
 	httputils.NetAddr
 
+	// uploaded, set on client conns, is closed once the transport is done
+	// with the request body.
+	uploaded <-chan struct{}
+	closed   atomic.Bool
+
 	// deadlines
 	deadline *time.Timer
 }
@@ -181,6 +187,9 @@ type tcpConn struct {
 }
 
 func (t *tcpConn) Read(b []byte) (n int, err error) {
+	if t.closed.Load() {
+		return 0, net.ErrClosed
+	}
 	err = t.waitCreated()
 	if err != nil {
 		return 0, err
