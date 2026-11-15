@@ -20,6 +20,7 @@ type overrideSchema struct {
 	Interface      *string `provider:"interface-name,omitempty"`
 	RoutingMark    *int    `provider:"routing-mark,omitempty"`
 	IPVersion      *string `provider:"ip-version,omitempty"`
+	TrafficPool    *string `provider:"traffic-pool,omitempty"`
 
 	AdditionalPrefix *string                   `provider:"additional-prefix,omitempty"`
 	AdditionalSuffix *string                   `provider:"additional-suffix,omitempty"`
@@ -72,6 +73,9 @@ func (o *overrideSchema) Apply(mapping map[string]any) error {
 	}
 	if o.IPVersion != nil {
 		mapping["ip-version"] = *o.IPVersion
+	}
+	if o.TrafficPool != nil {
+		mapping["traffic-pool"] = *o.TrafficPool
 	}
 
 	for _, expr := range o.ProxyName {
