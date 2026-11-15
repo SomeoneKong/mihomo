@@ -145,6 +145,11 @@ func HandleConn(c net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...
 		if err != nil || resp.Close {
 			break // close connection
 		}
+		// The next request follows the body of this one, which the transport may still be
+		// reading, or nothing read if the request was refused: wait for it and read it to its end.
+		if request.Body != nil {
+			_ = request.Body.Close()
+		}
 	}
 
 	_ = conn.Close()
