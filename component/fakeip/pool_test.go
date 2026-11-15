@@ -308,3 +308,62 @@ func TestPool_FlushMemoryCache(t *testing.T) {
 	assert.NotEqual(t, bar, next)
 	assert.Equal(t, baz, nero)
 }
+
+// persistentPool makes a pool over a cache file, as New does with persistence.
+func persistentPool(t *testing.T, db *bbolt.DB, ipnet netip.Prefix) *Pool {
+	pool, err := New(Options{IPNet: ipnet, Size: 10})
+	assert.NoError(t, err)
+	pool.store = newCachefileStore(&cachefile.CacheFile{DB: db}, ipnet)
+	pool.pending = true
+	return pool
+}
+
+func openCacheFile(t *testing.T) *bbolt.DB {
+	f, err := os.CreateTemp("", "mihomo")
+	assert.NoError(t, err)
+	_ = f.Close()
+	db, err := bbolt.Open(f.Name(), 0o666, &bbolt.Options{Timeout: time.Second, NoStatistics: true})
+	assert.NoError(t, err)
+	t.Cleanup(func() {
+		_ = db.Close()
+		_ = os.Remove(f.Name())
+	})
+	return db
+}
+
+func TestPool_ParsedPoolLeavesTheCacheAlone(t *testing.T) {
+	ipnet := netip.MustParsePrefix("192.168.0.1/29")
+	db := openCacheFile(t)
+	running := persistentPool(t, db, ipnet)
+	foo := running.Lookup("foo.com")
+
+	// a config parsed meanwhile makes a pool over the same cache, used or not
+	parsed := persistentPool(t, db, ipnet)
+	host, ok := running.LookBack(foo)
+	assert.True(t, ok)
+	assert.Equal(t, "foo.com", host)
+
+	// once it replaces the running pool, it goes on from the state of that one
+	parsed.CloneFrom(running)
+	bar := parsed.Lookup("bar.com")
+	assert.NotEqual(t, foo, bar)
+	assert.Equal(t, foo, parsed.Lookup("foo.com"))
+}
+
+func TestPool_StateSurvivesAnExitThatDoesNotStoreIt(t *testing.T) {
+	ipnet := netip.MustParsePrefix("192.168.0.1/29")
+	db := openCacheFile(t)
+	first := persistentPool(t, db, ipnet)
+	foo := first.Lookup("foo.com")
+	bar := first.Lookup("bar.com")
+
+	// the process ends without StoreState, and the next one starts over the same cache
+	next := persistentPool(t, db, ipnet)
+	host, ok := next.LookBack(foo)
+	assert.True(t, ok)
+	assert.Equal(t, "foo.com", host)
+	baz := next.Lookup("baz.com")
+	assert.NotEqual(t, foo, baz)
+	assert.NotEqual(t, bar, baz)
+	assert.Equal(t, bar, next.Lookup("bar.com"))
+}
