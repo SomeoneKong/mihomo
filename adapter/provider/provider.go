@@ -106,6 +106,7 @@ func (bp *baseProvider) setProxies(proxies []C.Proxy) {
 	defer bp.mutex.Unlock()
 	bp.proxies = proxies
 	bp.version += 1
+	notifyProxiesChanged()
 	bp.healthCheck.setProxies(proxies)
 	if bp.healthCheck.auto() {
 		go bp.healthCheck.check()
