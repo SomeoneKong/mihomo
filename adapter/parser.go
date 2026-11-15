@@ -259,7 +259,7 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	}
 
 	proxy = outbound.NewAutoCloseProxyAdapter(proxy)
-	return NewProxy(proxy), nil
+	return withTrafficPool(NewProxy(proxy), mapping), nil
 }
 
 type proxyOption struct {

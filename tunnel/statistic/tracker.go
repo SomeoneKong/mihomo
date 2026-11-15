@@ -39,6 +39,7 @@ type TrackerInfo struct {
 	usage        *usageCounter
 	matchInput   any
 	recorder     *DialerRecorder // of the dial this underlying connection was made for
+	probe        bool            // made for a probe, so its data is no use of the groups it went through
 	dialedLayers []DialedLayer   // the underlying connections this connection's dial made
 }
 
@@ -59,6 +60,7 @@ func AsUnderlying(ctx context.Context) TrackerOption {
 	return func(info *TrackerInfo) {
 		info.underlying = true
 		info.recorder, _ = ctx.Value(dialerRecorderKey{}).(*DialerRecorder)
+		info.probe = C.IsProbe(ctx)
 	}
 }
 
