@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/pool"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
@@ -80,6 +81,9 @@ func (l *PacketConn) handleUDP(pc net.PacketConn, tunnel C.Tunnel, buf []byte, a
 		pc:      pc,
 		rAddr:   addr,
 		payload: buf,
+		// The source names the listener as well, as it keys the UDP session: one
+		// client socket may send to several tunnels, each with its own target.
+		srcAddr: N.NewCustomAddr(addr.Network(), pc.LocalAddr().String()+"|"+addr.String(), addr),
 	}
 
 	tunnel.HandleUDPPacket(inbound.NewPacket(l.target, cPacket, C.TUNNEL, additions...))
