@@ -353,6 +353,8 @@ func (c *Client) DialStreamOne(ctx context.Context) (net.Conn, error) {
 	pr, pw := io.Pipe()
 
 	conn := &Conn{writer: pw}
+	uploaded, markUploaded := newUploadSignal()
+	conn.uploaded = uploaded
 
 	// Use gotConn to detect when TCP connection is established, so we can
 	// return the conn immediately without waiting for the HTTP response.
@@ -373,6 +375,7 @@ func (c *Client) DialStreamOne(ctx context.Context) (net.Conn, error) {
 			default: // GotConn maybe called multiple times, ignore the second and later calls
 			}
 		},
+		WroteRequest: func(httptrace.WroteRequestInfo) { markUploaded() },
 	})
 
 	req, err := http.NewRequestWithContext(streamCtx, c.cfg.GetNormalizedUplinkHTTPMethod(), requestURL.String(), pr)
@@ -398,11 +401,13 @@ func (c *Client) DialStreamOne(ctx context.Context) (net.Conn, error) {
 	go func() {
 		resp, err := transport.RoundTrip(req)
 		if err != nil {
+			markUploaded()
 			wrc.CloseWithError(err)
 			close(gotConn)
 			return
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			markUploaded()
 			_ = resp.Body.Close()
 			wrc.CloseWithError(fmt.Errorf("xhttp stream-one bad status: %s", resp.Status))
 			return
@@ -456,6 +461,8 @@ func (c *Client) DialStreamUp(ctx context.Context) (net.Conn, error) {
 	pr, pw := io.Pipe()
 
 	conn := &Conn{writer: pw}
+	uploaded, markUploaded := newUploadSignal()
+	conn.uploaded = uploaded
 
 	sessionID := c.generateSessionID()
 
@@ -517,6 +524,9 @@ func (c *Client) DialStreamUp(ctx context.Context) (net.Conn, error) {
 		return nil, err
 	}
 	uploadReq.Host = c.cfg.Host
+	uploadReq = uploadReq.WithContext(httptrace.WithClientTrace(uploadReq.Context(), &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) { markUploaded() },
+	}))
 
 	wrc := NewWaitReadCloser()
 
@@ -552,6 +562,7 @@ func (c *Client) DialStreamUp(ctx context.Context) (net.Conn, error) {
 	go func() {
 		resp, err := uploadTransport.RoundTrip(uploadReq)
 		if err != nil {
+			markUploaded()
 			_ = pw.CloseWithError(err)
 			return
 		}
