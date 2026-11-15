@@ -2,6 +2,8 @@ package constant
 
 import (
 	"github.com/stretchr/testify/assert"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -38,4 +40,17 @@ func TestPath(t *testing.T) {
 	assert.True(t, (&path{}).IsSafePath("./mykey/../key1.key"))
 	assert.False(t, (&path{}).IsSafePath("./mykey/../../key1.key"))
 
+}
+
+func TestMMDBKeepsGeoIPName(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"GeoIP.dat", "geoip.metadb"} {
+		assert.NoError(t, os.WriteFile(filepath.Join(dir, name), nil, 0o644))
+	}
+	defer func(name string) { GeoipName = name }(GeoipName)
+
+	p := &path{homeDir: dir}
+	p.GeoIP()
+	p.MMDB()
+	assert.Equal(t, "GeoIP.dat", GeoipName)
 }
