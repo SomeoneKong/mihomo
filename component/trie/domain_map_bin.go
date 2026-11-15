@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"unsafe"
+
+	"github.com/metacubex/mihomo/common/utils"
 )
 
 func (mapping *DomainMap[T]) WriteBin(writer io.Writer, writeValue func(io.Writer, T) error) error {
@@ -72,13 +75,15 @@ func ReadDomainMapBin[T any](reader io.Reader, readValue func(io.Reader) (T, err
 	if length < 1 {
 		return nil, errors.New("length is invalid")
 	}
-	mapping := &DomainMap[T]{values: make([]T, length)}
+	var zero T
+	mapping := &DomainMap[T]{values: make([]T, 0, utils.PreallocLen(length, int(unsafe.Sizeof(zero))))}
 	mapping.index.DomainSet = set
-	for index := range mapping.values {
-		mapping.values[index], err = readValue(reader)
+	for i := int64(0); i < length; i++ {
+		value, err := readValue(reader)
 		if err != nil {
 			return nil, err
 		}
+		mapping.values = append(mapping.values, value)
 	}
 
 	// init

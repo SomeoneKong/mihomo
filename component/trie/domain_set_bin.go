@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+
+	"github.com/metacubex/mihomo/common/utils"
 )
 
 func (ss *DomainSet) WriteBin(w io.Writer) (err error) {
@@ -72,8 +74,9 @@ func ReadDomainSetBin(r io.Reader) (ds *DomainSet, err error) {
 	if length < 1 {
 		return nil, errors.New("length is invalid")
 	}
-	ds.leaves = make([]uint64, length)
+	ds.leaves = make([]uint64, 0, utils.PreallocLen(length, 8))
 	for i := int64(0); i < length; i++ {
+		ds.leaves = append(ds.leaves, 0)
 		err = binary.Read(r, binary.BigEndian, &ds.leaves[i])
 		if err != nil {
 			return nil, err
@@ -88,8 +91,9 @@ func ReadDomainSetBin(r io.Reader) (ds *DomainSet, err error) {
 	if length < 1 {
 		return nil, errors.New("length is invalid")
 	}
-	ds.labelBitmap = make([]uint64, length)
+	ds.labelBitmap = make([]uint64, 0, utils.PreallocLen(length, 8))
 	for i := int64(0); i < length; i++ {
+		ds.labelBitmap = append(ds.labelBitmap, 0)
 		err = binary.Read(r, binary.BigEndian, &ds.labelBitmap[i])
 		if err != nil {
 			return nil, err
@@ -104,8 +108,7 @@ func ReadDomainSetBin(r io.Reader) (ds *DomainSet, err error) {
 	if length < 1 {
 		return nil, errors.New("length is invalid")
 	}
-	ds.labels = make([]byte, length)
-	_, err = io.ReadFull(r, ds.labels)
+	ds.labels, err = readBytes(r, length)
 	if err != nil {
 		return nil, err
 	}
