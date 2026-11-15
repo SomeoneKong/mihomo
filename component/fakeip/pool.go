@@ -37,6 +37,12 @@ type Pool struct {
 	mux     sync.Mutex
 	ipnet   netip.Prefix
 	store   store
+
+	// pending is set while the allocation state of a persistent store is not restored. A pool
+	// is made whenever a config is parsed, used or not, and the store may be in use by the
+	// running pool: the state is restored, and a stale store flushed, only once the pool
+	// allocates, unless it takes the state over from the pool it replaces.
+	pending bool
 }
 
 // Lookup return a fake ip with host
@@ -98,11 +104,14 @@ func (p *Pool) CloneFrom(o *Pool) {
 
 	// the allocation state only matches the cloned entries if both pools cover the same range
 	if o.first == p.first && o.last == p.last {
-		p.offset, p.cycle = o.offset, o.cycle
+		p.offset, p.cycle, p.pending = o.offset, o.cycle, o.pending
 	}
 }
 
 func (p *Pool) get(host string) netip.Addr {
+	if p.pending {
+		p.restoreState()
+	}
 	p.offset = p.offset.Next()
 
 	if !p.offset.Less(p.last) {
@@ -114,7 +123,12 @@ func (p *Pool) get(host string) netip.Addr {
 		p.store.DelByIP(p.offset)
 	}
 
-	p.store.PutByIP(p.offset, host)
+	if s, ok := p.store.(*cachefileStore); ok {
+		// the state goes with each record, so that it survives an exit that does not store it
+		s.putByIPWithState(p.offset, host, p.offset, p.cycle)
+	} else {
+		p.store.PutByIP(p.offset, host)
+	}
 	return p.offset
 }
 
@@ -123,11 +137,15 @@ func (p *Pool) FlushFakeIP() error {
 	if err == nil {
 		p.cycle = false
 		p.offset = p.first.Prev()
+		p.pending = false
 	}
 	return err
 }
 
 func (p *Pool) StoreState() {
+	if p.pending {
+		return // the state stored is the one there is
+	}
 	if s, ok := p.store.(*cachefileStore); ok {
 		s.PutByHost(offsetKey, p.offset)
 		if p.cycle {
@@ -137,6 +155,7 @@ func (p *Pool) StoreState() {
 }
 
 func (p *Pool) restoreState() {
+	p.pending = false
 	if s, ok := p.store.(*cachefileStore); ok {
 		if _, exist := s.GetByHost(cycleKey); exist {
 			p.cycle = true
@@ -189,11 +208,10 @@ func New(options Options) (*Pool, error) {
 	}
 	if options.Persistence {
 		pool.store = newCachefileStore(cachefile.Cache(), options.IPNet)
+		pool.pending = true
 	} else {
 		pool.store = newMemoryStore(options.Size)
 	}
-
-	pool.restoreState()
 
 	return pool, nil
 }
