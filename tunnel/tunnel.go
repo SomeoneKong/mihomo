@@ -367,12 +367,12 @@ func resolveMetadataWith(ctx context.Context, metadata *C.Metadata, path *pinned
 				if !features.CMFA {
 					// normal check for process
 					uid, path, err := process.FindProcessName(metadata.NetWork.String(), metadata.SrcIP, int(metadata.SrcPort))
+					metadata.Uid = uid // known even when the process is not
 					if err != nil {
 						log.Debugln("[Process] find process error for %s: %v", metadata.String(), err)
 					} else {
 						metadata.Process = filepath.Base(path)
 						metadata.ProcessPath = path
-						metadata.Uid = uid
 
 						if pkg, err := process.FindPackageName(metadata); err == nil { // for android (not CMFA) package names
 							metadata.Process = pkg
