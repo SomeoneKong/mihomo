@@ -800,8 +800,17 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 func uniqueName(names map[string]int, name string) string {
 	if index, ok := names[name]; ok {
 		index++
+		// the name with the suffix may be taken as well, as by a proxy named so itself
+		for {
+			if _, taken := names[fmt.Sprintf("%s-%02d", name, index)]; !taken {
+				break
+			}
+			index++
+		}
 		names[name] = index
 		name = fmt.Sprintf("%s-%02d", name, index)
+		// taken from now on, by this proxy
+		names[name] = 0
 	} else {
 		index = 0
 		names[name] = index
