@@ -473,3 +473,18 @@ func TestConvertsV2RayX365(t *testing.T) {
 		assert.NoError(t, err)
 	}
 }
+
+func TestConvertsV2RayKeepsEveryProxyOfARepeatedName(t *testing.T) {
+	links := "trojan://pwd@example.com:443#name\n" +
+		"trojan://pwd@example.com:443#name-01\n" +
+		"trojan://pwd@example.com:443#name\n" +
+		"trojan://pwd@example.com:443#name\n" +
+		"trojan://pwd@example.com:443#name-02\n"
+	proxies, err := ConvertsV2Ray([]byte(links))
+	assert.NoError(t, err)
+	var names []string
+	for _, proxy := range proxies {
+		names = append(names, proxy["name"].(string))
+	}
+	assert.Equal(t, []string{"name", "name-01", "name-02", "name-03", "name-02-01"}, names)
+}
