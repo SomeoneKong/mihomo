@@ -406,3 +406,36 @@ func decodeV4HeaderForTest(t *testing.T, data []byte) (int, int) {
 	}
 	return int(binary.BigEndian.Uint16(header[3:5])), int(binary.BigEndian.Uint16(header[5:7]))
 }
+
+type countingConn struct {
+	bufferConn
+	reads int
+}
+
+func (c *countingConn) Read(b []byte) (int, error) {
+	c.reads++
+	return c.bufferConn.Read(b)
+}
+
+func TestSnellV4ReadsSmallFramesInFewReads(t *testing.T) {
+	const frames, size = 50, 100
+	raw := &countingConn{}
+	writer := newV4Conn(&raw.bufferConn, []byte("password"))
+	for i := 0; i < frames; i++ {
+		if _, err := writer.Write(bytes.Repeat([]byte{byte(i)}, size)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reader := newV4Conn(raw, []byte("password"))
+	buf := make([]byte, frames*size)
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf[len(buf)-1] != frames-1 {
+		t.Fatalf("unexpected plaintext tail: %d", buf[len(buf)-1])
+	}
+	if raw.reads >= frames {
+		t.Fatalf("%d frames took %d reads of the conn", frames, raw.reads)
+	}
+}
