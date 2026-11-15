@@ -404,6 +404,9 @@ type RawTLS struct {
 	ClientAuthCert  string   `yaml:"client-auth-cert" json:"client-auth-cert"`
 	EchKey          string   `yaml:"ech-key" json:"ech-key"`
 	CustomTrustCert []string `yaml:"custom-certifactes" json:"custom-certifactes"`
+
+	// CustomCertificates is the correctly spelled key of CustomTrustCert; the certificates under both are trusted.
+	CustomCertificates []string `yaml:"custom-certificates" json:"custom-certificates"`
 }
 
 type RawConfig struct {
@@ -884,7 +887,7 @@ func parseTLS(cfg *RawConfig) (*TLS, error) {
 		ClientAuthType:  cfg.TLS.ClientAuthType,
 		ClientAuthCert:  cfg.TLS.ClientAuthCert,
 		EchKey:          cfg.TLS.EchKey,
-		CustomTrustCert: cfg.TLS.CustomTrustCert,
+		CustomTrustCert: append(cfg.TLS.CustomTrustCert, cfg.TLS.CustomCertificates...),
 	}, nil
 }
 
