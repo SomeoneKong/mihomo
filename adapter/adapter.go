@@ -3,22 +3,15 @@ package adapter
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
-	"strings"
-	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/queue"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/common/xsync"
-	"github.com/metacubex/mihomo/component/ca"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/log"
-
-	"github.com/metacubex/http"
 )
 
 var UnifiedDelay = atomic.NewBool(false)
@@ -37,6 +30,8 @@ type Proxy struct {
 	alive   atomic.Bool
 	history *queue.Queue[C.DelayHistory]
 	extra   xsync.Map[string, *internalProxyState]
+
+	trafficPool string
 }
 
 // Adapter implements C.Proxy
@@ -165,128 +160,7 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 // URLTest get the delay for the specified URL
 // implements C.Proxy
 func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
-	var satisfied bool
-
-	defer func() {
-		// A test canceled by its caller, such as the health check of a provider a new
-		// config replaced, says nothing about the proxy, which the new config may still
-		// use. A test that timed out is a failure as before.
-		if err != nil && errors.Is(ctx.Err(), context.Canceled) {
-			return
-		}
-		alive := err == nil
-		record := C.DelayHistory{Time: time.Now()}
-		if alive {
-			record.Delay = t
-		}
-
-		p.alive.Store(alive)
-		p.history.Put(record)
-		if p.history.Len() > defaultHistoriesNum {
-			p.history.Pop()
-		}
-
-		state, _ := p.extra.LoadOrStoreFn(url, func() *internalProxyState {
-			return &internalProxyState{
-				history: queue.New[C.DelayHistory](defaultHistoriesNum),
-				alive:   atomic.NewBool(true),
-			}
-		})
-
-		if !satisfied {
-			record.Delay = 0
-			alive = false
-		}
-
-		state.alive.Store(alive)
-		state.history.Put(record)
-		if state.history.Len() > defaultHistoriesNum {
-			state.history.Pop()
-		}
-
-	}()
-
-	unifiedDelay := UnifiedDelay.Load()
-
-	addr, err := urlToMetadata(url)
-	if err != nil {
-		return
-	}
-
-	start := time.Now()
-	instance, err := p.DialContext(ctx, &addr)
-	if err != nil {
-		return
-	}
-	defer func() {
-		_ = instance.Close()
-	}()
-
-	req, err := http.NewRequest(http.MethodHead, url, nil)
-	if err != nil {
-		return
-	}
-	req = req.WithContext(ctx)
-
-	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
-	if err != nil {
-		return
-	}
-
-	transport := &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			return instance, nil
-		},
-		// from http.DefaultTransport
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       tlsConfig,
-	}
-
-	client := http.Client{
-		Timeout:   30 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	defer client.CloseIdleConnections()
-
-	resp, err := client.Do(req)
-
-	if err != nil {
-		return
-	}
-
-	_ = resp.Body.Close()
-
-	if unifiedDelay {
-		second := time.Now()
-		var ignoredErr error
-		var secondResp *http.Response
-		secondResp, ignoredErr = client.Do(req)
-		if ignoredErr == nil {
-			resp = secondResp
-			_ = resp.Body.Close()
-			start = second
-		} else {
-			if strings.HasPrefix(url, "http://") {
-				log.Errorln("%s failed to get the second response from %s: %v", p.Name(), url, ignoredErr)
-				log.Warnln("It is recommended to use HTTPS for provider.health-check.url and group.url to ensure better reliability. Due to some proxy providers hijacking test addresses and not being compatible with repeated HEAD requests, using HTTP may result in failed tests.")
-			}
-		}
-	}
-
-	satisfied = resp != nil && (expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode)))
-	t = uint16(time.Since(start) / time.Millisecond)
-	if t == 0 {
-		// a zero delay means a failed test to callers, so report a test
-		// that completed in under a millisecond as 1 ms
-		t = 1
-	}
+	t, _, err = p.test(ctx, url, expectedStatus)
 	return
 }
 
