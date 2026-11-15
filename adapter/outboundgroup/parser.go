@@ -71,6 +71,9 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 	}
 
 	groupName := groupOption.Name
+	if err := checkFilters(groupOption); err != nil {
+		return nil, fmt.Errorf("%s: %w", groupName, err)
+	}
 
 	if groupOption.EmptyFallback == "" {
 		groupOption.EmptyFallback = "COMPATIBLE"
