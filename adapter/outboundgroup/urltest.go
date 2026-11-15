@@ -121,6 +121,9 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 
 		for _, proxy := range proxies {
 			if u.fastNode != nil && proxy.Name() == u.fastNode.Name() {
+				// a provider update replaces its proxies with new ones of the same names, and
+				// only the new one is tested from then on
+				u.fastNode = proxy
 				fastNotExist = false
 			}
 
@@ -136,7 +139,7 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 
 		}
 		// tolerance
-		if u.fastNode == nil || fastNotExist || !u.fastNode.AliveForTestUrl(u.testUrl) || u.fastNode.LastDelayForTestUrl(u.testUrl) > fast.LastDelayForTestUrl(u.testUrl)+u.tolerance {
+		if u.fastNode == nil || fastNotExist || !u.fastNode.AliveForTestUrl(u.testUrl) || u.beyondTolerance(u.fastNode, fast) {
 			u.fastNode = fast
 		}
 		return u.fastNode, nil
@@ -146,6 +149,17 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 	}
 
 	return elm
+}
+
+// beyondTolerance reports whether the alive selected proxy is slower than fast by more than
+// the tolerance. One not tested yet, as the one a provider update just created, has no delay
+// to compare and stays selected until it is tested.
+func (u *URLTest) beyondTolerance(selected, fast C.Proxy) bool {
+	delay := selected.LastDelayForTestUrl(u.testUrl)
+	if delay == 0xffff {
+		return false
+	}
+	return int(delay) > int(fast.LastDelayForTestUrl(u.testUrl))+int(u.tolerance)
 }
 
 // SupportUDP implements C.ProxyAdapter
