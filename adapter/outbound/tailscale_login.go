@@ -510,9 +510,9 @@ func forgetLastNoiseDial(tracker *health.Tracker) bool {
 }
 
 // setExitNodeOnRun sets the exit node of the config once the node runs after a login, which
-// may finish long after the request, as through a link or an approval. The start of the
-// outbound sets it only for the first run. The wait gives way to a newer login or logout,
-// and ends with the outbound.
+// may finish long after the request, as through a link or an approval, and tries again as
+// peers change until it is set. The start of the outbound sets it only for the first run.
+// The wait gives way to a newer login or logout, and ends with the outbound.
 func (t *Tailscale) setExitNodeOnRun(lc *local.Client) {
 	if !tailscaleExitNodeNeedsStatus(t.option) {
 		return
@@ -521,31 +521,28 @@ func (t *Tailscale) setExitNodeOnRun(lc *local.Client) {
 	t.login.mutex.Lock()
 	t.login.cancelExitNode = cancel
 	t.login.mutex.Unlock()
-	watcher, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState)
+	watcher, err := lc.WatchIPNBus(ctx, tailscaleExitNodeWatch)
 	if err != nil {
 		cancel()
 		log.Warnln("[Tailscale](%s) watch for the node to run after a login: %v", t.Name(), err)
 		return
 	}
+	exitNode := &exitNodeSetter{t: t, ctx: ctx, report: func(message string) {
+		t.login.mutex.Lock()
+		defer t.login.mutex.Unlock()
+		// a newer round stops this wait before it clears the error
+		if ctx.Err() == nil {
+			t.login.exitNodeError = message
+		}
+	}}
 	go func() {
 		defer cancel()
 		defer watcher.Close()
 		for {
 			n, err := watcher.Next()
-			if err != nil {
+			if err != nil || exitNode.handle(&n) {
 				return
 			}
-			if n.State != nil && *n.State == ipn.Running {
-				break
-			}
-		}
-		if err := t.applyExitNodePrefs(ctx); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			message := t.login.redact(fmt.Sprintf("set exit node: %v", err))
-			t.login.setExitNodeError(message)
-			log.Warnln("[Tailscale](%s) %s", t.Name(), message)
 		}
 	}()
 }
