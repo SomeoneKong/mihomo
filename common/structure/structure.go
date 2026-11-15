@@ -240,6 +240,16 @@ func (d *Decoder) decodeBool(name string, data any, val reflect.Value) (err erro
 		val.SetBool(dataVal.Int() != 0)
 	case isUint(kind) && d.option.WeaklyTypedInput:
 		val.SetBool(dataVal.Uint() != 0)
+	case isFloat(kind) && d.option.WeaklyTypedInput:
+		val.SetBool(dataVal.Float() != 0)
+	case kind == reflect.String && d.option.WeaklyTypedInput:
+		var b bool
+		b, err = strconv.ParseBool(dataVal.String())
+		if err == nil {
+			val.SetBool(b)
+		} else {
+			err = fmt.Errorf("cannot parse '%s' as bool: %s", name, err)
+		}
 	default:
 		err = fmt.Errorf(
 			"'%s' expected type '%s', got unconvertible type '%s'",
