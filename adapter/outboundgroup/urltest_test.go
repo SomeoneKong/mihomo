@@ -1,10 +1,16 @@
 package outboundgroup
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
+	"github.com/metacubex/mihomo/adapter/provider"
+	"github.com/metacubex/mihomo/component/probe"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 
@@ -91,4 +97,36 @@ func TestURLTestFollowsTheSelectedProxyAcrossAProviderUpdate(t *testing.T) {
 	newA.alive = false
 	u.fastSingle.Reset()
 	require.Same(t, newB, u.fast(false))
+}
+
+func TestURLTestSelectsByTheDelaysOfAGroupTest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	url := server.URL + "/generate_204"
+
+	a := &flakyAdapter{Direct: outbound.NewDirectWithOption(outbound.DirectOption{Name: "a"})}
+	b := &flakyAdapter{Direct: outbound.NewDirectWithOption(outbound.DirectOption{Name: "b"})}
+	members := []C.Proxy{adapter.NewProxy(a), adapter.NewProxy(b)}
+	pd, err := provider.NewCompatibleProvider("auto", members, provider.NewHealthCheck(members, url, 2000, 0, true, nil))
+	require.NoError(t, err)
+	u, err := NewURLTest(GroupCommonOption{Name: "auto", URL: url}, URLTestOption{},
+		adapter.NewProxy(outbound.NewCompatible()), []P.ProxyProvider{pd})
+	require.NoError(t, err)
+
+	saved := probe.Default
+	probe.Default = probe.New(time.Now, nil)
+	defer func() { probe.Default = saved }()
+
+	// a selection caches a, as a dial or a look at the group while the test runs does
+	require.Equal(t, "a", u.Now())
+	a.down.Store(true)
+	ctx := WithManualTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	delays, err := GroupManualTest(ctx, u, url, nil)
+	require.NoError(t, err)
+	require.NotContains(t, delays, "a")
+	require.Equal(t, "b", u.Now())
 }

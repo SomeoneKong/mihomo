@@ -64,6 +64,10 @@ func GroupManualTest(ctx context.Context, group ProxyGroup, url string, expected
 		}()
 	}
 	wg.Wait()
+	if u, ok := group.(*URLTest); ok {
+		// selects by the delays just tested, not those a selection during the tests cached
+		u.fastSingle.Reset()
+	}
 	if len(delays) == 0 {
 		return delays, fmt.Errorf("get delay: all proxies timeout")
 	}
