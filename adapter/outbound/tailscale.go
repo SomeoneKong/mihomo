@@ -364,7 +364,12 @@ func (t *Tailscale) watchBackendState() {
 		t.setBackendInitialized(err)
 		return
 	}
-	watcher, err := lc.WatchIPNBus(t.ctx, ipn.NotifyInitialState)
+	exitNodeNeedsStatus := tailscaleExitNodeNeedsStatus(t.option)
+	mask := ipn.NotifyInitialState
+	if exitNodeNeedsStatus {
+		mask = tailscaleExitNodeWatch
+	}
+	watcher, err := lc.WatchIPNBus(t.ctx, mask)
 	if err != nil {
 		t.setBackendInitialized(err)
 		return
@@ -372,28 +377,22 @@ func (t *Tailscale) watchBackendState() {
 	defer watcher.Close()
 
 	backendInitialized := false
-	exitNodeNeedsStatus := tailscaleExitNodeNeedsStatus(t.option)
+	exitNode := &exitNodeSetter{t: t, ctx: t.ctx}
 	for {
 		n, err := watcher.Next()
 		if err != nil {
 			t.setBackendInitialized(err)
 			return
 		}
-		if n.State == nil {
-			continue
-		}
 
-		if *n.State != ipn.NoState && !backendInitialized {
+		if n.State != nil && *n.State != ipn.NoState && !backendInitialized {
 			t.setBackendInitialized(nil)
 			backendInitialized = true
 			if !exitNodeNeedsStatus {
 				return
 			}
 		}
-		if exitNodeNeedsStatus && *n.State == ipn.Running {
-			if err := t.applyExitNodePrefs(t.ctx); err != nil {
-				log.Warnln("[Tailscale](%s) set exit node failed: %v", t.Name(), err)
-			}
+		if exitNodeNeedsStatus && exitNode.handle(&n) {
 			return
 		}
 	}
@@ -465,8 +464,16 @@ func (t *Tailscale) applyExitNodePrefs(ctx context.Context) error {
 		return err
 	}
 	// carried through by the backend whether or not the request is still there
-	_, err = lc.EditPrefs(context.Background(), mp)
-	return err
+	prefs, err := lc.EditPrefs(context.Background(), mp)
+	if err != nil {
+		return err
+	}
+	// an exit node given by IP is taken unchecked before the node runs, and resolved to the
+	// node once it is in the netmap
+	if prefs.ExitNodeID.IsZero() {
+		return fmt.Errorf("exit node %s is not in the netmap yet", t.option.ExitNode)
+	}
+	return nil
 }
 
 func buildTailscaleMaskedPrefs(option TailscaleOption) (*ipn.MaskedPrefs, error) {
