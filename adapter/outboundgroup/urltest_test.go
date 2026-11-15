@@ -67,3 +67,28 @@ func TestURLTestKeepsTheFirstProxyWithinTolerance(t *testing.T) {
 	u.fastSingle.Reset()
 	require.Equal(t, "second", u.fast(false).Name(), "slower by more than the tolerance")
 }
+
+func TestURLTestFollowsTheSelectedProxyAcrossAProviderUpdate(t *testing.T) {
+	a := &delayProxy{name: "a", alive: true, delay: 100}
+	b := &delayProxy{name: "b", alive: true, delay: 200}
+	pd := &listProvider{proxies: []C.Proxy{b, a}, version: 1}
+	u := newDelayURLTest(t, pd, 150)
+	require.Same(t, a, u.fast(false))
+
+	// The update creates new proxies, not tested yet: the selection stays on a.
+	newA := &delayProxy{name: "a", alive: true}
+	newB := &delayProxy{name: "b", alive: true}
+	pd.replace(newB, newA)
+	u.fastSingle.Reset()
+	require.Same(t, newA, u.fast(false))
+
+	// Only some are tested so far.
+	newB.delay = 200
+	u.fastSingle.Reset()
+	require.Same(t, newA, u.fast(false), "the selected proxy is not tested yet")
+
+	// The new a fails its test; the old one, which nothing tests any more, still looks fine.
+	newA.alive = false
+	u.fastSingle.Reset()
+	require.Same(t, newB, u.fast(false))
+}
