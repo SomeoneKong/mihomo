@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"fmt"
+	"net"
 
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/loopback"
@@ -42,7 +43,9 @@ func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) 
 	if err := d.ResolveUDP(ctx, metadata); err != nil {
 		return nil, err
 	}
-	pc, err := dialer.NewDialer(d.DialOptions()...).ListenPacket(ctx, "udp", "", metadata.AddrPort())
+	pc, err := listenPacketAvoiding(func() (net.PacketConn, error) {
+		return dialer.NewDialer(d.DialOptions()...).ListenPacket(ctx, "udp", "", metadata.AddrPort())
+	}, metadata.SrcPort)
 	if err != nil {
 		return nil, err
 	}
