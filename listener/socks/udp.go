@@ -40,7 +40,9 @@ func NewUDP(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*UDPLi
 }
 
 func NewUDPWithConfig(config LC.AuthServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*UDPListener, error) {
+	isDefault := false
 	if len(additions) == 0 {
+		isDefault = true
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-SOCKS"),
 			inbound.WithSpecialRules(""),
@@ -72,14 +74,21 @@ func NewUDPWithConfig(config LC.AuthServer, lc C.InboundListenConfig, tunnel C.T
 				}
 				continue
 			}
-			handleSocksUDP(l, tunnel, data, put, remoteAddr, additions...)
+			user, ok := admitUDP(config.AuthStore, isDefault, l.LocalAddr(), remoteAddr)
+			if !ok {
+				if put != nil {
+					put()
+				}
+				continue
+			}
+			handleSocksUDP(l, tunnel, data, put, remoteAddr, user, additions...)
 		}
 	}()
 
 	return sl, nil
 }
 
-func handleSocksUDP(pc net.PacketConn, tunnel C.Tunnel, buf []byte, put func(), addr net.Addr, additions ...inbound.Addition) {
+func handleSocksUDP(pc net.PacketConn, tunnel C.Tunnel, buf []byte, put func(), addr net.Addr, user string, additions ...inbound.Addition) {
 	target, payload, err := socks5.DecodeUDPPacket(buf)
 	if err != nil {
 		// Unresolved UDP packet, return buffer to the pool
@@ -94,5 +103,7 @@ func handleSocksUDP(pc net.PacketConn, tunnel C.Tunnel, buf []byte, put func(), 
 		payload: payload,
 		put:     put,
 	}
-	tunnel.HandleUDPPacket(inbound.NewPacket(target, packet, C.SOCKS5, additions...))
+	udpPacket, metadata := inbound.NewPacket(target, packet, C.SOCKS5, additions...)
+	metadata.InUser = user
+	tunnel.HandleUDPPacket(udpPacket, metadata)
 }

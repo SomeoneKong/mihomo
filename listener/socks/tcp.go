@@ -186,6 +186,10 @@ func HandleSocks5(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, addition
 	}
 	if command == socks5.CmdUDPAssociate {
 		defer conn.Close()
+		if key, ok := associationKeyOf(conn.LocalAddr(), conn.RemoteAddr()); ok {
+			addAssociation(key, user)
+			defer removeAssociation(key, user)
+		}
 		io.Copy(io.Discard, conn)
 		return
 	}
