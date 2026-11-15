@@ -21,17 +21,18 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 	buf := pool.Get(pool.RelayBufferSize)
 	defer pool.Put(buf)
-	n, err := c.Conn.Read(buf)
-	if err != nil {
-		return 0, err
+	for c.decoded.Len() == 0 { // a read may end within a frame
+		n, err := c.Conn.Read(buf)
+		if err != nil {
+			return 0, err
+		}
+		c.underDecoded.Write(buf[:n])
+		err = c.Decode(&c.decoded, &c.underDecoded)
+		if err != nil {
+			return 0, err
+		}
 	}
-	c.underDecoded.Write(buf[:n])
-	err = c.Decode(&c.decoded, &c.underDecoded)
-	if err != nil {
-		return 0, err
-	}
-	n, _ = c.decoded.Read(b)
-	return n, nil
+	return c.decoded.Read(b)
 }
 
 func (c *Conn) Write(b []byte) (int, error) {
