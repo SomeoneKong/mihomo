@@ -392,3 +392,23 @@ func TestStructure_IgnoreInNest(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, s.MustIgnore, "oldData")
 }
+
+func TestStructure_WeakTypeBool(t *testing.T) {
+	type Flags struct {
+		A bool `test:"a"`
+		B bool `test:"b"`
+		C bool `test:"c"`
+		D bool `test:"d"`
+	}
+
+	s := &Flags{}
+	err := weakTypeDecoder.Decode(map[string]any{"a": 1.0, "b": 0.0, "c": "true", "d": "0"}, s)
+	assert.Nil(t, err)
+	assert.Equal(t, &Flags{A: true, C: true}, s)
+
+	err = weakTypeDecoder.Decode(map[string]any{"a": "yes"}, &Flags{})
+	assert.NotNil(t, err)
+
+	err = decoder.Decode(map[string]any{"a": "true"}, &Flags{})
+	assert.NotNil(t, err)
+}
