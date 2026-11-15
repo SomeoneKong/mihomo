@@ -30,6 +30,16 @@ func (c *cachefileStore) PutByIP(ip netip.Addr, host string) {
 	c.cache.PutByIP(ip, host)
 }
 
+// putByIPWithState puts the record of ip with the allocation state of the pool, in one
+// transaction.
+func (c *cachefileStore) putByIPWithState(ip netip.Addr, host string, offset netip.Addr, cycle bool) {
+	state := map[string]netip.Addr{offsetKey: offset}
+	if cycle {
+		state[cycleKey] = offset
+	}
+	c.cache.PutByIPWith(ip, host, state)
+}
+
 // DelByIP implements store.DelByIP
 func (c *cachefileStore) DelByIP(ip netip.Addr) {
 	c.cache.DelByIP(ip)
