@@ -212,6 +212,9 @@ type Config struct {
 	Sniffer       *sniffer.Config
 	TLS           *TLS
 
+	// ProbeCensusHours is the interval of the census of the on-demand groups, 0 for none.
+	ProbeCensusHours int
+
 	inlineProxies *inlineProxyParser
 }
 
@@ -472,6 +475,8 @@ type RawConfig struct {
 
 	ClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`
 
+	ProbeCensusHours int `yaml:"probe-census-hours" json:"probe-census-hours"`
+
 	inlineProxies *inlineProxyParser // set by parsing, see CommitProxyReuse
 }
 
@@ -686,6 +691,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	config.Proxies = proxies
 	config.Providers = providers
 	config.inlineProxies = rawCfg.inlineProxies
+	config.ProbeCensusHours = parseProbeCensusHours(rawCfg.ProbeCensusHours)
 
 	listeners, err := parseListeners(rawCfg)
 	if err != nil {

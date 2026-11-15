@@ -43,6 +43,9 @@ type GroupCommonOption struct {
 	IncludeAllProviders bool     `group:"include-all-providers,omitempty"`
 	Hidden              bool     `group:"hidden,omitempty"`
 	Icon                string   `group:"icon,omitempty"`
+	Probe               string   `group:"probe,omitempty"`
+	StrictOrder         bool     `group:"strict-order,omitempty"`
+	Order               string   `group:"order,omitempty"`
 }
 
 func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, providersMap map[string]P.ProxyProvider, AllProxies []string, AllProviders []string) (ProxyGroup, error) {
@@ -117,6 +120,7 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 	if len(groupOption.Proxies) == 0 && len(groupOption.Use) == 0 {
 		return nil, fmt.Errorf("%s: %w", groupName, errMissProxy)
 	}
+	onDemand := checkProbeOption(&groupOption)
 
 	expectedStatus, err := utils.NewUnsignedRanges[uint16](groupOption.ExpectedStatus)
 	if err != nil {
@@ -146,7 +150,7 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 			if groupOption.URL == "" {
 				groupOption.URL = C.DefaultTestURL
 			}
-		} else {
+		} else if !onDemand {
 			addTestUrlToProviders(PDs, groupOption.URL, expectedStatus, groupOption.Filter, uint(groupOption.Interval))
 		}
 		providers = append(providers, PDs...)
@@ -167,7 +171,7 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 		}
 
 		// select don't need auto health check
-		if groupOption.Type != "select" && groupOption.Type != "relay" {
+		if groupOption.Type != "select" && groupOption.Type != "relay" && !onDemand {
 			if groupOption.Interval == 0 {
 				groupOption.Interval = 300
 			}
