@@ -262,12 +262,18 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 	}
 }
 
-func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func()) {
+func (gb *GroupBase) onDialFailed(ctx context.Context, adapterType C.AdapterType, err error, fn func()) {
 	if adapterType == C.Direct || adapterType == C.Compatible || adapterType == C.Reject || adapterType == C.Pass || adapterType == C.RejectDrop {
 		return
 	}
 
 	if errors.Is(err, C.ErrNotSupport) {
+		return
+	}
+
+	// A dial its caller canceled, as one that lost a race to another, may end with any error
+	// and tells nothing of the proxy. One that ran out of time still counts.
+	if errors.Is(ctx.Err(), context.Canceled) {
 		return
 	}
 
