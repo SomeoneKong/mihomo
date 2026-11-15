@@ -989,7 +989,11 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	}
 	hc := provider.NewHealthCheck(ps, "", 5000, 0, true, nil)
 	pd, _ := provider.NewCompatibleProvider(provider.ReservedName, ps, hc)
-	providersMap[provider.ReservedName] = pd
+	// A group named so already holds the name with its own provider, which only starts its
+	// health check from the map. GLOBAL is given its provider directly.
+	if _, exist := providersMap[provider.ReservedName]; !exist {
+		providersMap[provider.ReservedName] = pd
+	}
 
 	if !hasGlobal {
 		global, err := outboundgroup.NewSelector(
