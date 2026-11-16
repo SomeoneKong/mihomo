@@ -97,6 +97,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 
 	updateExperimental(cfg.Experimental)
 	updateUsers(cfg.Users)
+	processManaged.Store(cfg.ProcessManaged)
 	outboundgroup.BeginPublish(cfg.Proxies, cfg.Providers)
 	defer outboundgroup.Activate(cfg.Proxies, cfg.ProbeCensusHours)
 	updateProxies(cfg.Proxies, cfg.Providers)
