@@ -58,6 +58,7 @@ type configSchema struct {
 	TcpConcurrent     *bool                    `json:"tcp-concurrent"`
 	FindProcessMode   *process.FindProcessMode `json:"find-process-mode"`
 	InterfaceName     *string                  `json:"interface-name"`
+	forkConfigSchema
 }
 
 type tunSchema struct {
@@ -401,6 +402,8 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 	if general.IPv6 != nil {
 		resolver.DisableIPv6 = !*general.IPv6
 	}
+
+	general.forkConfigSchema.apply()
 
 	render.NoContent(w, r)
 }
