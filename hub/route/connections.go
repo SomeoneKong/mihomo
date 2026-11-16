@@ -19,6 +19,7 @@ import (
 func connectionRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", getConnections)
+	r.Get("/closed", getClosedConnections)
 	r.Delete("/", closeAllConnections)
 	r.Delete("/{id}", closeConnection)
 	return r
@@ -91,6 +92,7 @@ func getConnections(w http.ResponseWriter, r *http.Request) {
 // connections they carry describe with their dialer chains, unless asked with underlying=true.
 func connectionSnapshot(r *http.Request) *statistic.Snapshot {
 	snapshot := statistic.DefaultManager.Snapshot()
+	snapshot.Instance = statistic.Instance()
 	if r.URL.Query().Get("underlying") != "true" {
 		snapshot.Connections = slices.DeleteFunc(snapshot.Connections, (*statistic.TrackerInfo).Underlying)
 	}
