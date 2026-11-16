@@ -67,6 +67,7 @@ type General struct {
 	KeepAliveIdle     int                     `json:"keep-alive-idle"`
 	KeepAliveInterval int                     `json:"keep-alive-interval"`
 	DisableKeepAlive  bool                    `json:"disable-keep-alive"`
+	ConnectionStats   bool                    `json:"connection-stats"`
 }
 
 // Inbound config
@@ -217,6 +218,8 @@ type Config struct {
 	// ProcessManaged is set when the program that started the core manages its executable
 	// and process: the core neither replaces nor restarts itself.
 	ProcessManaged bool
+	// ConnectionStats has the connections counted per host, process, rule and route.
+	ConnectionStats bool
 
 	inlineProxies *inlineProxyParser
 }
@@ -483,6 +486,7 @@ type RawConfig struct {
 
 	ProbeCensusHours int  `yaml:"probe-census-hours" json:"probe-census-hours"`
 	ProcessManaged   bool `yaml:"process-managed" json:"process-managed"`
+	ConnectionStats  bool `yaml:"connection-stats" json:"connection-stats"`
 
 	inlineProxies *inlineProxyParser // set by parsing, see CommitProxyReuse
 }
@@ -700,6 +704,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	config.inlineProxies = rawCfg.inlineProxies
 	config.ProbeCensusHours = parseProbeCensusHours(rawCfg.ProbeCensusHours)
 	config.ProcessManaged = rawCfg.ProcessManaged
+	config.ConnectionStats = rawCfg.ConnectionStats
 
 	listeners, err := parseListeners(rawCfg)
 	if err != nil {
