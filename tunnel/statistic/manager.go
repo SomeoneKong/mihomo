@@ -122,6 +122,7 @@ func (m *Manager) handle() {
 }
 
 type Snapshot struct {
+	Instance      string         `json:"instance,omitempty"`
 	DownloadTotal int64          `json:"downloadTotal"`
 	UploadTotal   int64          `json:"uploadTotal"`
 	Connections   []*TrackerInfo `json:"connections"`

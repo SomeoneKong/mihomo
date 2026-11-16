@@ -52,6 +52,11 @@ func (e *hourEntry[K]) add(up, down, conns int64) {
 			b.inflight.Add(-1)
 			continue
 		}
+		if admit := e.table.admit; admit != nil && !admit() {
+			// Stopped after the caller checked: drain waits only for the counts admitted.
+			b.inflight.Add(-1)
+			return
+		}
 		b.up.Add(up)
 		b.down.Add(down)
 		if conns != 0 {
@@ -152,6 +157,8 @@ type hourTable[K comparable] struct {
 	retainHours   int64
 	maxEntries    int
 	overflowIndex func(K) int
+	// admit, when set, is checked by a count once in its bucket; see drain.
+	admit func() bool
 
 	hour          atomic.Int64 // never goes back, even when the system clock does
 	settled       atomic.Int64
@@ -193,6 +200,12 @@ func unixHour(t time.Time) int64 {
 // the past hours. It returns the hour before and the hour now.
 func (t *hourTable[K]) tick() (from, to int64) {
 	t.ticks.Add(1)
+	return t.advance()
+}
+
+// advance moves the clock to the current hour, sealing and expiring the past hours, without
+// counting a tick.
+func (t *hourTable[K]) advance() (from, to int64) {
 	from = t.hour.Load()
 	hour := unixHour(t.now())
 	if hour <= from {
@@ -277,6 +290,22 @@ func (t *hourTable[K]) seal(hour int64) {
 		}
 	}
 	t.settled.Store(hour - 1)
+}
+
+// drain waits for the counts already in a bucket to finish. Once admit has started to refuse,
+// a count not waited for here finds it refusing and leaves nothing behind.
+func (t *hourTable[K]) drain() {
+	var buckets []*hourBucket
+	for _, e := range t.allEntries() {
+		e.mu.Lock()
+		buckets = append(buckets, e.buckets...)
+		e.mu.Unlock()
+	}
+	for _, b := range buckets {
+		for b.inflight.Load() != 0 {
+			runtime.Gosched()
+		}
+	}
 }
 
 // expire drops the hours no longer kept and removes the entries left idle.
