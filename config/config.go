@@ -214,6 +214,9 @@ type Config struct {
 
 	// ProbeCensusHours is the interval of the census of the on-demand groups, 0 for none.
 	ProbeCensusHours int
+	// ProcessManaged is set when the program that started the core manages its executable
+	// and process: the core neither replaces nor restarts itself.
+	ProcessManaged bool
 
 	inlineProxies *inlineProxyParser
 }
@@ -478,7 +481,8 @@ type RawConfig struct {
 
 	ClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`
 
-	ProbeCensusHours int `yaml:"probe-census-hours" json:"probe-census-hours"`
+	ProbeCensusHours int  `yaml:"probe-census-hours" json:"probe-census-hours"`
+	ProcessManaged   bool `yaml:"process-managed" json:"process-managed"`
 
 	inlineProxies *inlineProxyParser // set by parsing, see CommitProxyReuse
 }
@@ -695,6 +699,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	config.Providers = providers
 	config.inlineProxies = rawCfg.inlineProxies
 	config.ProbeCensusHours = parseProbeCensusHours(rawCfg.ProbeCensusHours)
+	config.ProcessManaged = rawCfg.ProcessManaged
 
 	listeners, err := parseListeners(rawCfg)
 	if err != nil {
