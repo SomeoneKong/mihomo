@@ -13,6 +13,7 @@ import (
 func usageRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/proxies", getProxyUsage)
+	r.Get("/connections", getConnectionUsage)
 	return r
 }
 
