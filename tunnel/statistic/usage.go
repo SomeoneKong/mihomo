@@ -27,6 +27,9 @@ var DefaultUsage *Usage
 func init() {
 	DefaultUsage = newUsage(time.Now)
 	go DefaultUsage.run()
+	DefaultConnStats = newConnStats(time.Now, DefaultUsage.instance, DefaultUsage.startedAt)
+	go DefaultConnStats.run()
+	DefaultClosed = newClosedConns(time.Now, DefaultUsage.instance, DefaultUsage.startedAt)
 }
 
 // OutboundIdentity is implemented by the connections outbound adapters build.
@@ -275,12 +278,16 @@ func addBuckets(a, b []UsageBucket) []UsageBucket {
 type usageCounter struct {
 	entry    *usageEntry
 	release  sync.Once
-	activity *activity // renews the groups the connection was handed out by
+	activity *activity    // renews the groups the connection was handed out by
+	conn     *connCounter // counts an exit connection in the connection stats
 }
 
 func (c *usageCounter) add(up, down int64) {
 	if c != nil {
 		c.entry.add(up, down, 0)
+		if c.conn != nil {
+			c.conn.add(up, down)
+		}
 		if down > 0 && c.activity != nil {
 			c.activity.renew()
 		}
@@ -291,6 +298,9 @@ func (c *usageCounter) leave() {
 	if c != nil {
 		c.release.Do(func() {
 			c.entry.table.release(c.entry)
+			if c.conn != nil {
+				c.conn.leave()
+			}
 		})
 	}
 }
@@ -317,5 +327,14 @@ func (info *TrackerInfo) joinUsage(conn any, upload, download int64) {
 	if !info.probe {
 		info.usage.activity = activityOf(conn)
 	}
+	if !info.underlying {
+		info.usage.conn = newConnCounter(DefaultConnStats, DefaultClosed, info)
+	}
 	info.usage.add(upload, download)
+}
+
+// Instance identifies this run of the core in the usage, the connection stats and the
+// closed connections.
+func Instance() string {
+	return DefaultUsage.instance
 }
