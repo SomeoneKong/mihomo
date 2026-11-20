@@ -57,6 +57,7 @@ const (
 	GostRelay
 	X365
 	Ninja
+	IKEv2
 )
 
 const (
@@ -248,6 +249,8 @@ func (at AdapterType) String() string {
 		return "X365"
 	case Ninja:
 		return "Ninja"
+	case IKEv2:
+		return "IKEv2"
 	case Relay:
 		return "Relay"
 	case Selector:
