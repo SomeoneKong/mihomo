@@ -215,6 +215,13 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 			break
 		}
 		proxy, err = outbound.NewOpenVPN(*openVPNOption)
+	case "ikev2":
+		ikev2Option := &outbound.IKEv2Option{BasicOption: basicOption}
+		err = decoder.Decode(mapping, ikev2Option)
+		if err != nil {
+			break
+		}
+		proxy, err = outbound.NewIKEv2(*ikev2Option)
 	case "tailscale":
 		tailscaleOption := &outbound.TailscaleOption{BasicOption: basicOption}
 		err = decoder.Decode(mapping, tailscaleOption)
