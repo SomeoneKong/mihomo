@@ -1528,6 +1528,32 @@ proxies: # socks5
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
     # dns: [ 1.1.1.1, 8.8.8.8 ] # 仅在 remote-dns-resolve 为 true 时生效
 
+  # ikev2：IPsec IKEv2 远程接入（RFC 7296），网关用预共享密钥认证，用户用 EAP-MSCHAPv2 认证，例如 FortiGate 拨号 VPN
+  # ESP 始终封装在 UDP 中（NAT-T），因此可以经 dialer-proxy 转发
+  - name: "ikev2"
+    type: ikev2
+    server: vpn.example.com
+    # port: 500 # IKE 端口，默认 500，协商后切换到 4500；其他端口则 IKE 和 ESP 都走该端口
+    psk: "pre-shared-key"
+    # username / password：EAP-MSCHAPv2 账号；都不填时客户端也用预共享密钥认证
+    username: "user"
+    password: "pass"
+    # local-id: "client.example.com" # 发给网关的 IDi，可以是 IP、邮箱或域名；默认用本地 UDP 地址
+    # ike-proposals: [aes256-sha256-ecp384, aes128-sha1-ecp384] # 默认值；支持 aes128/aes192/aes256、sha1/sha256/sha384/sha512、modp2048/modp3072/ecp256/ecp384/ecp521
+    # esp-proposals: [aes256-sha256-ecp384, aes128-sha1-ecp384] # 默认值；DH 组用于重协商时的 PFS，不需要 PFS 时去掉，例如 aes256-sha256
+    # ike-lifetime: 86400 # 单位为秒，到 90% 时重协商 IKE SA，默认 86400
+    # esp-lifetime: 43200 # 单位为秒，到 90% 时重协商 CHILD SA，默认 43200
+    # dpd-interval: 30 # 单位为秒，这么久没收到网关的数据就发 DPD，默认 30
+    # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
+    # mtu: 1400
+    udp: true
+    # ip-stack:
+    #   mode: auto # options: auto, mips, gvisor; auto uses mihomo IP stack (MIPS), gvisor needs compiled with -tags with_gvisor
+    #   congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; ignored by gVisor
+    # dialer-proxy: "ss1"
+    # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
+    # dns: [ 1.1.1.1, 8.8.8.8 ] # 仅在 remote-dns-resolve 为 true 时生效；不填时使用网关下发的 DNS
+
   # masque
   - name: "masque"
     type: masque
